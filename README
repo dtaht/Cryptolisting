@@ -18,12 +18,13 @@ It is recommended that you use at least version 0.3.8.
    - BUGFIX: when greylisting by network prefix (option -/) Greyfix
      would treat all IPv6 addresses as "" (empty string) [[[http://trac.kim-minh.com/greyfix/ticket/9][Ticket #9]]].
 
+     
 * Features
 
    - Low and tunable resource usage and high efficiency.  The program
      is written in C and uses Berkeley DB to track mailers.  By itself it
      allocates memory only for a single request and the Berkeley DB library
-     can be configured to use very few RAM.
+     can be configured to use very little RAM.
    - Integrates with Postfix's master daemon.  Postfix will shutdown
      greyfix when it is not used completely freeing its runtime
      resources.
@@ -99,6 +100,28 @@ smtpd_recipient_restrictions = permit_mynetworks,
   check_policy_service inet:127.0.0.1:9998
 127.0.0.1:9998_time_limit = 3600
 </example>
+
+* Theory of operation
+  is OUT THERE
+
+  MX 10 mx1.example.org
+  MX 20 mx2.example.org
+
+** Why
+   Great, now you've created twice the work for yourself.
+   
+   It is a pretty good assumption that almost anybody with starttls working
+   correctly knows what he's doing, so why not exchange email directly with such servers?
+
+   Generate an ipset table
+** Benefits
+   - Send/recieve mail faster
+   - Send/recieve mail more securely
+   - Stop random spam COLD.
+** More usage
+
+   Way one: 
+   Very short term greylist (1 minute, by default) that sends the 
 
 * Usage
 

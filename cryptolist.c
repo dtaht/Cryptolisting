@@ -1,11 +1,11 @@
-/* Copyright 2007 by Kim Minh Kaplan
+/* Coprright 2010 by Dave Taht
+ * based on greyfix, which was
+ * Copyright 2007 by Kim Minh Kaplan
  *
- * greyfix.c
+ * cryptolist.c
  *
- * Postfix policy daemon designed to prevent spam using the
- * greylisting method.
+ * Postfix policy daemon designed to detect tls support
  *
- * Greylisting: http://projects.puremagic.com/greylisting/
  * Postfix: http://www.postfix.org/
  * Kim Minh Kaplan: http://www.kim-minh.com/
  *
@@ -25,7 +25,6 @@
 #include <unistd.h>
 #include <syslog.h>
 #include <sys/stat.h>
-
 #include <db.h>
 
 #include "policy.h"
@@ -37,7 +36,7 @@
  * will be tempfailed.  Use a setting of zero with caution, as it will
  * learn spammers as well as legitimate senders.
  **/
-#define DELAY_MAIL_SECS (58 * 60)	/* 58 minutes */
+#define DELAY_MAIL_SECS (60)	/* 1 minute */
 /**
  * This determines how many seconds of life are given to a record that
  * is created from a new mail [ip,from,to] triplet.  Note that the
@@ -59,17 +58,28 @@
 
 #define DEF_DB_HOME DATA_STATE_DIR"/"PACKAGE
 
-#define DB_FILE_NAME "triplets.db"
+#define DB_FILE_NAME "tls_triplets.db"
 #define SEP '\000'
 
 #define prefixp(s,p) (!strncmp((s),(p),sizeof(p)-1))
+
+/*
+  right now the crypto field has to be "discovered". I'd like, actually
+  to track what crypto gets used. 
+
+ */
+
+#define TRANSPORT_NOTCRYPTED 0
+#define TRANSPORT_ENCRYPTED 1
 
 struct triplet_data {
     time_t create_time;
     time_t access_time;
     unsigned long block_count;
     unsigned long pass_count;
+    int crypted;
 };
+
 
 static const char *db_home = DEF_DB_HOME;
 
@@ -91,12 +101,15 @@ static unsigned long pass_max_idle = UPDATE_RECORD_LIFE_SECS;
    replaced by the receiving domain name.  The sequence "%%" is
    replaced by the single character "%".  Other sequences beginning
    with "%" are invalid. */
-static const char *reject_action_fmt = "DEFER_IF_PERMIT Greylisted by "
-    PACKAGE_STRING ", try again in %d second%p."
-    "  See http://www.kim-minh.com/pub/greyfix/ for more information.";
-static const char *greylisted_action_fmt = "PREPEND X-Greyfix: Greylisted by "
+static const char *reject_action_fmt = "DEFER_IF_PERMIT Cryptolisted by "
+    PACKAGE_STRING ", PLEASE enable STARTTLS on your email server. The bits you save may be your own. Delayed: %d second%p."
+    "  See http://cryptolist.taht.net for more information.";
+static const char *greylisted_action_fmt = "PREPEND X-CRYPTED: Non-encrypted transfer stalled by "
     PACKAGE_STRING " for %d second%p."
-    "  See http://www.kim-minh.com/pub/greyfix/ for more information.";
+    "  See http://cryptolist.taht.net for more information.";
+static const char *cryptolisted_action_fmt = "PREPEND X-CRYPTED: Encrypted transfer stalled by "
+    PACKAGE_STRING " for %d second%p."
+    "  See http://cryptolist.taht.net for more information.";
 static const char *singular_string = "", *plural_string = "s";
 /* As we store IP addresses in Postfix's format, to obtain the network
  address we first strip `ipv4_network_strip_bytes' numbers (between 0
@@ -109,7 +122,7 @@ static int dump_triplets;
 /* Some Berkeley DB errors are not really error.  Keep them quiet. */
 static int muffle_error = 0;
 
-/* When Greyfix detects a problem, let emails pass through and log. */
+/* When Cryptolist detects a problem, let emails pass through and log. */
 static jmp_buf defect_jmp_buf;
 static const char *defect_msg = 0;
 
@@ -249,8 +262,8 @@ cleanup()
     }
     rc = db_create(&db, dbenv, 0);
     if (!rc)
-	if (! db->remove(db, "stats.db", 0, 0))
-	    syslog(LOG_NOTICE, "Unused database stats.db removed");
+	if (! db->remove(db, "tls_stats.db", 0, 0))
+	    syslog(LOG_NOTICE, "Unused database tls_stats.db removed");
     db = 0;
     if (dbenv) {
 	rc = dbenv->close(dbenv, 0);
@@ -354,6 +367,7 @@ do_dump_triplets()
 	while ((rc = dbcp->c_get(dbcp, &key, &data, DB_NEXT)) == 0) {
 	    const char *s = key.data;
 	    const struct triplet_data *t = data.data;
+	    printf("%d\t", t->crypted);
 	    printf("%s\t", s);
 	    s += strlen(s) + 1;
 	    printf("%s\t", s);
@@ -470,6 +484,7 @@ build_data()
     triplet_data.create_time = triplet_data.access_time;
     triplet_data.block_count = 0;
     triplet_data.pass_count = 0;
+    triplet_data.crypted = 0;
 }
 
 static void
@@ -556,7 +571,7 @@ printf_action(const char *fmt, unsigned long delay)
 }
 
 static int
-process_smtp_rcpt()
+process_smtp_rcpt(int crypted)
 {
     double delay;
     if (setjmp(defect_jmp_buf)) {
@@ -568,21 +583,37 @@ process_smtp_rcpt()
 	    puts(STR_ACTION "WARN " PACKAGE_STRING " is not working properly");
 	return 1;
     }
+    // FIXME this could overwrite
     get_grey_data();
+    if (triplet_data.crypted != crypted) {
+      syslog(LOG_DEBUG,"crypted field changed for some reason");
+      triplet_data.crypted = crypted;
+    }
     delay = difftime(triplet_data.access_time, triplet_data.create_time);
+
     /* Block inbound mail that is from a previously unknown (ip, from, to) triplet */
-    if (delay < greylist_delay) {
+    /* However we want different behavior for crypted stuff
+     */
+
+    if(crypted > 0) {
+	fputs(STR_ACTION, stdout);
+	printf_action(cryptolisted_action_fmt, delay);
+	putchar('\n');
+    } else {
+      // IN the case of unecrypted data
+      if(delay < greylist_delay) {
 	triplet_data.block_count++;
 	fputs(STR_ACTION, stdout);
 	printf_action(reject_action_fmt, greylist_delay - delay);
 	putchar('\n');
-    }
-    else if (triplet_data.pass_count++)
+      }
+      else if (triplet_data.pass_count++)
 	puts(STR_ACTION "DUNNO");
-    else {
+      else {
 	fputs(STR_ACTION, stdout);
 	printf_action(greylisted_action_fmt, delay);
 	putchar('\n');
+      }
     }
     return put_grey_data();
 }
@@ -692,6 +723,41 @@ print_usage(FILE *f, const char *progname)
 	    progname, AUTO_RECORD_LIFE_SECS, DELAY_MAIL_SECS,
 	    UPDATE_RECORD_LIFE_SECS, reject_action_fmt, greylisted_action_fmt);
 }
+
+/* 
+    Postfix version 2.1 and later:
+    request=smtpd_access_policy
+    protocol_state=RCPT
+    protocol_name=SMTP
+    helo_name=some.domain.tld
+    queue_id=8045F2AB23
+    sender=foo@bar.tld
+    recipient=bar@foo.tld
+    recipient_count=0
+    client_address=1.2.3.4
+    client_name=another.domain.tld
+    reverse_client_name=another.domain.tld
+    instance=123.456.7
+
+    Postfix version 2.2 and later:
+    sasl_method=plain
+    sasl_username=you
+    sasl_sender=
+    size=12345
+    ccert_subject=solaris9.porcupine.org
+    ccert_issuer=Wietse+20Venema
+    ccert_fingerprint=C2:9D:F4:87:71:73:73:D9:18:E7:C2:F3:C1:DA:6E:04
+
+    Postfix version 2.3 and later:
+    encryption_protocol=TLSv1/SSLv3
+    encryption_cipher=DHE-RSA-AES256-SHA
+    encryption_keysize=256
+    etrn_domain=
+    Postfix version 2.5 and later:
+    stress=
+    [empty line]
+
+*/
 
 int
 main(int argc, const char **argv)
@@ -820,7 +886,9 @@ main(int argc, const char **argv)
     if (dump_triplets)
 	do_dump_triplets();
     else while (read_policy_request(0)) {
-	const char *protocol = 0, *state = 0, *ip, *from, *to;
+	const char *protocol = 0, *state = 0, *ip, *from, *to, 
+	  *encryption_protocol = 0, *ccert_fingerprint = 0;
+	int crypted = 0;
 	if ((protocol = find_attribute("protocol_name"))
 	    && (state = find_attribute("protocol_state"))
 	    && (prefixp(protocol, STR_SMTP) || prefixp(protocol, STR_ESMTP))
@@ -828,8 +896,17 @@ main(int argc, const char **argv)
 	    && (ip = find_attribute("client_address"))
 	    && (from = find_attribute("sender"))
 	    && (to = find_attribute("recipient"))) {
+	    encryption_protocol = find_attribute("encryption_protocol");
+	    ccert_fingerprint = find_attribute("ccert_fingerprint");
+	    if (encryption_protocol) {
+	      triplet_data.crypted = TRANSPORT_ENCRYPTED; // FIXME, figure out what it is
+	    }
+	    syslog(LOG_DEBUG,"Encryption: %s Fingerprint: %s", 
+		   encryption_protocol ? encryption_protocol : "NA",
+		   ccert_fingerprint ? ccert_fingerprint : "NA");  
+
 	    build_triplet_key(ip, from, to);
-	    if (process_smtp_rcpt()) {
+	    if (process_smtp_rcpt(crypted)) {
 	      syslog(LOG_ERR, "error: cleaning up");
 	      cleanup();
 	      syslog(LOG_ERR, "error: exiting after cleanup");
