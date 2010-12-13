@@ -5,3 +5,5 @@ config.h
 stamp-h1
 Makefile
 config.log
+config.status
+.deps
