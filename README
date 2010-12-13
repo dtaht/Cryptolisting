@@ -1,0 +1,280 @@
+#title Greyfix
+Copyright 2007 by [[mailto:kaplan+greyfix@kim-minh.com][Kim Minh Kaplan]]
+
+[[http://www.kim-minh.com/pub/greyfix/][Greyfix]] is the greylisting policy daemon for [[http://www.postfix.org/][Postfix]] written by
+[[http://www.kim-minh.com/][Kim Minh Kaplan]].  [[http://projects.puremagic.com/greylisting/][Greylisting]] is an anti spam technique described by
+Evan Harris.  Postfix is a popular mail transport agent developped by
+[[http://www.porcupine.org/wietse/][Wietse Zweitze Venema]].  Greyfix uses Postfix policy mechanism to
+enable greylisting with Postfix.
+
+<contents depth="1">
+
+It is recommended that you use at least version 0.3.8.
+
+* Latest version
+
+[[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.9.tar.gz][greyfix-0.3.9.tar.gz]] ([[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.9.tar.gz.asc][PGP signature]])
+
+   - BUGFIX: when greylisting by network prefix (option -/) Greyfix
+     would treat all IPv6 addresses as "" (empty string) [[[http://trac.kim-minh.com/greyfix/ticket/9][Ticket #9]]].
+
+* Features
+
+   - Low and tunable resource usage and high efficiency.  The program
+     is written in C and uses Berkeley DB to track mailers.  By itself it
+     allocates memory only for a single request and the Berkeley DB library
+     can be configured to use very few RAM.
+   - Integrates with Postfix's master daemon.  Postfix will shutdown
+     greyfix when it is not used completely freeing its runtime
+     resources.
+   - No administrative burden.  Everything happens "automagically".
+   - No need for a database server.  Uses Berkeley DB which is already
+     installed with most free Unix distributions.
+
+* Requirements
+
+   - [[http://www.postfix.org/][Postfix 2.1]] or later.  Greyfix is designed exclusively for it.
+     It will *not* work with other mailers.
+
+   - [[http://www.oracle.com/database/berkeley-db/index.html][Berkeley DB 4.0]] or later.  Chances are you already have it.
+
+* Quickstart
+
+Greyfix uses GNU's build system.  To install the greyfix daemon just
+type the following commands:
+
+<example>
+    $ gzip -cd greyfix-0.3.9.tar.gz | tar xf -
+    $ cd greyfix-0.3.9
+    $ ./configure
+    $ make
+    $ su -c 'make install'
+</example>
+
+Edit Postfix's master configuration file, =/etc/postfix/master.cf=, and
+add the following (if you are running Solaris see below):
+
+<example>
+greyfix    unix  -       n       n       -       -       spawn
+  user=nobody argv=/usr/local/sbin/greyfix -/ 24
+</example>
+
+Edit Postfix's main configuration file, =/etc/postfix/main.cf= and add
+the following (not for Solaris):
+
+<example>
+smtpd_recipient_restrictions = permit_mynetworks,
+  reject_unauth_destination,
+  check_policy_service unix:private/greyfix
+</example>
+
+If there is already a =smtpd_recipient_restrictions= configuration line
+you should edit it rather than add a new one.  The important part for
+greyfix is that you should add <code>check_policy_service
+unix:private/greyfix</code> to it.
+
+Finally have postfix reload its configuration with <code>postfix
+reload</code>.
+
+** Solaris
+
+A user reported a [[http://trac.kim-minh.com/greyfix/ticket/4][Corrupted DB on x64 Solaris 10 U4]].  If you want to
+help me track this, please contact [[mailto:kaplan+greyfix@kim-minh.com][me]].
+
+http://www.postfix.org/SMTPD_POLICY_README.html has some important
+note for Solaris.  The important thing to note is that Solaris
+UNIX-domain sockets do not work reliably. Use TCP sockets instead.
+Here is what you should add to your =/etc/postfix/master.cf=:
+
+<example>
+127.0.0.1:9998  inet  n       n       n       -       9       spawn
+  user=nobody argv=/usr/local/sbin/greyfix -/ 24
+</example>
+
+and to your =/etc/postfix/main.cf=:
+
+<example>
+smtpd_recipient_restrictions = permit_mynetworks,
+  reject_unauth_destination,
+  check_policy_service inet:127.0.0.1:9998
+127.0.0.1:9998_time_limit = 3600
+</example>
+
+* Usage
+
+<example>
+greyfix [-V] [-v] [-d] [-h <Berkeley DB home directory>] [-g <greylist delay>]
+    [-b <bloc maximum idle>] [-p <pass maximum idle>] [-r <reject action>]
+    [-G <greylisted action>] [-/ <network bits>] [--dump-triplets] [--help]
+
+    -b <seconds>, --bloc-max-idle <seconds>
+
+	This determines how many seconds of life are given to a record
+	that is created from a new mail (ip, from, to) triplet.  Note
+	that the window created by this setting for passing mails is
+	reduced by the amount set for --greylist-delay.  NOTE: See
+	also --pass-max-idle.  Defaults to 18000 (5 hours).
+
+    -d, --debug
+
+	Debug logging
+
+    -g <seconds>, --greylist-delay <seconds>
+
+	This determines how many seconds we will block inbound mail
+	that is from a previously unknown (ip, from, to) triplet.  If
+	it is set to zero, incoming mail association will be learned,
+	but no deliveries will be tempfailed.  Use a setting of zero
+	with caution, as it will learn spammers as well as legitimate
+	senders.  Defaults to 3480 (58 minutes).
+
+    -h <Berkeley DB home directory>, --home <Berkeley DB home directory>
+
+	Location of the Berkeley DB environment home location (the
+	default is autoconf's $localstatedir/greyfix
+	i.e. /usr/local/var/lib/greyfix).
+
+    --help
+
+        Show usage information.
+
+    -p <seconds>, --pass-max-idle <seconds>
+
+	How much life (in secs) to give to a record we are updating
+	from an allowed (passed) email.
+
+	The default is 36 days, which should be enough to handle
+	messages that may only be sent once a month, or on things like
+	the first monday of the month (which sometimes means 5 weeks).
+	Plus, we add a day for a delivery buffer.
+
+    -r <reject action>, --reject-action <reject action>
+
+        The reject action directive that will be used.  See access(5)
+        for valid actions.  The string expands %d to the number of
+        seconds, %p to the empty string if %d expands to 1 or "s"
+        otherwise, %s to " " and %% to "%".
+
+        The default is "DEFER_IF_PERMIT Greylisted by Greyfix X.Y.Z,
+        try again in %d second%p.  See
+        http://www.kim-minh.com/pub/greyfix/ for more information.".
+        http://cvs.puremagic.com/viewcvs/greylisting/schema/whitelist_ip.txt?r1=1.10&r2=1.11
+        suggests that a 451 SMTP error code is a better idea.
+
+    -G <greylisted action>, --greylisted-action <greylisted action>
+
+        The action that will be used the first time a triplet passes
+        greylisting.  Same expansion as for --reject-action.
+
+        The default is "PREPEND X-Greyfix: Greylisted by Grefix X.Y.Z
+        for %d second%p.  See http://www.kim-minh.com/pub/greyfix/ for
+        more information."
+
+    -v, --verbose
+
+	Verbose logging
+
+    -V, --version
+
+        Show version information.
+
+    -/ <nbits>, --network-prefix <nbits>
+
+	Only consider the first <nbits> bits of an IPv4 address.
+	Defaults to 32 i.e. the whole adresse is significant.
+
+    --dump-triplets
+
+        Dump the triplets database to stdout.  Mostly for debugging
+        purposes.
+</example>
+
+* Notes
+
+GNU Autoconf's default value for =$(localstatedir)= is
+=/usr/local/var/lib= which is quite different from what most Unix
+distribution use.  You'll probably want to invoke configure like this:
+
+<example>
+    $ ./configure --localstatedir=/var/lib
+</example>
+
+This makes Greyfix DB be located in =/var/lib/greyfix=.  Alternatively
+you can use the =-h <DB home>= command line option but do not forget
+to create the directory and give it correct permissions so that
+Greyfix can access it.
+
+Greyfix uses syslog with facility =LOG_MAIL=.  As such the log messages
+should appear along postfix's.
+
+If you log messages with DEBUG serverity you will see some messages
+saying something like "DEBUG: BDB-16: db_env->remove returned: Device
+busy".  They are *not* error messages and are normal when multiple
+greyfix daemons operate concurrently.
+
+You should use some whitelisting of some sort for some servers.  A
+good starting base is [[http://cvs.puremagic.com/viewcvs/greylisting/schema/whitelist_ip.txt?rev=HEAD][whitelist_ip.txt]].
+
+* TODO
+
+   - Real documentation
+   - Statistic collection
+   - Distribute triplets to other MX.
+   - Auto whitelisting of mail relays that pass greylisting repeatedly
+   - SPF?  This could render <code>--network-prefix</code> unnecessary,
+   - Use Milter protocol?
+   - Support <code>--network-prefix</code> with IPv6.
+   - How to do a DEFER_WITH_451_IF_PERMIT? (see
+     http://cvs.puremagic.com/viewcvs/greylisting/schema/whitelist_ip.txt?r1=1.10&r2=1.11
+     and
+     http://lists.puremagic.com/pipermail/greylist-users/2004-September/000766.html).
+
+* BUGS
+
+Bugs are filed on [[http://trac.kim-minh.com/greyfix/report][Greyfix's ticket page]].  To report a bug see first
+check that it is not already present in the list.  Then you can create
+a [[http://trac.kim-minh.com/greyfix/newticket][New Ticket]].
+
+* Older versions
+
+Note that version 0.3.8 fixes important bugs.  Do *not* use earlier
+versions.
+
+   - [[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.8.tar.gz][greyfix-0.3.8.tar.gz]] ([[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.8.tar.gz.asc][PGP signature]])
+      - BUGFIX: when there is an error let the email through and exit the
+	process [[[http://trac.kim-minh.com/greyfix/ticket/5][Ticket #5]]].
+      - BUGFIX: detect deadlocks and resolve them [[[http://trac.kim-minh.com/greyfix/ticket/8][Ticket #8]]].
+      - Don't remove the DB environment.
+      - Remove the unused stats.db database.
+      - Minor install directories fix [[[http://trac.kim-minh.com/greyfix/ticket/7][Ticket #7]]].
+   - [[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.7.tar.gz][greyfix-0.3.7.tar.gz]] ([[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.7.tar.gz.asc][PGP signature]])
+      - Do not block emails if there is an error.  Previous versions
+	would die.  This would cause Postfix's smtpd to reply with an
+	error code 500 and the email would bounce.  Now Greyfix will log
+	a warning and let the email continue.
+      - BUGFIX: expire correctly IDLE triplets.
+   - [[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.6.tar.gz][greyfix-0.3.6.tar.gz]] ([[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.6.tar.gz.asc][PGP signature]])
+      - Backward compatibility fix for Berkeley DB 4.0.
+   - [[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.5.tar.gz][greyfix-0.3.5.tar.gz]] ([[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.5.tar.gz.asc][PGP signature]])
+      - Backward compatibility fix for Berkeley DB 4.2 and before.
+      - Add =--help= and =--version= options, thanks to Stefan Siegel.
+   - [[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.4.tar.gz][greyfix-0.3.4.tar.gz]] ([[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.4.tar.gz.asc][PGP signature]])
+      - BUGFIX: include missing =policy.h= file.
+   - [[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.3.tar.gz][greyfix-0.3.3.tar.gz]] ([[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.3.tar.gz.asc][PGP signature]])
+      - BUGFIX expire correctly triplets
+      - Add option =--dump-triplets=, =--reject-action= and =--greylisted-action=.
+      - Really delete expired triplets from the DB.
+      - Note that =451= reject code is probably better than =DEFER_IF_PERMIT=.
+   - [[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.2.tar.gz][greyfix-0.3.2.tar.gz]] ([[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.2.tar.gz.asc][PGP signature]])
+      - Runtime configurable delays.
+      - Document command line arguments in README.
+      - New option =--network-prefix=.
+   - [[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.1.tar.gz][greyfix-0.3.1.tar.gz]] ([[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.1.tar.gz.asc][PGP signature]])
+      - Syslog with =LOG_MAIL= facility.
+      - Expire positive triplets.
+      - Error on invalid command line arguments.
+      - Add delay information in SMTP and header messages.
+      - Cleanup on receipt of signal.
+   - [[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.tar.gz][greyfix-0.3.tar.gz]] ([[http://www.kim-minh.com/pub/greyfix/greyfix-0.3.tar.gz.asc][PGP signature]])
+   - [[http://www.kim-minh.com/pub/greyfix/greyfix-0.2.tar.gz][greyfix-0.2.tar.gz]] ([[http://www.kim-minh.com/pub/greyfix/greyfix-0.2.tar.gz.asc][PGP signature]])
+   - [[http://www.kim-minh.com/pub/greyfix/greyfix-0.1.tar.gz][greyfix-0.1.tar.gz]] ([[http://www.kim-minh.com/pub/greyfix/greyfix-0.1.tar.gz.asc][PGP signature]])
