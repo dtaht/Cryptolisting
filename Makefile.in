@@ -30,7 +30,7 @@ POST_INSTALL = :
 NORMAL_UNINSTALL = :
 PRE_UNINSTALL = :
 POST_UNINSTALL = :
-sbin_PROGRAMS = greyfix$(EXEEXT)
+sbin_PROGRAMS = cryptolist$(EXEEXT)
 subdir = .
 DIST_COMMON = README $(am__configure_deps) $(srcdir)/Makefile.am \
 	$(srcdir)/Makefile.in $(srcdir)/config.h.in \
@@ -47,9 +47,9 @@ CONFIG_CLEAN_FILES =
 am__installdirs = "$(DESTDIR)$(sbindir)"
 sbinPROGRAMS_INSTALL = $(INSTALL_PROGRAM)
 PROGRAMS = $(sbin_PROGRAMS)
-am_greyfix_OBJECTS = greyfix.$(OBJEXT) policy.$(OBJEXT)
-greyfix_OBJECTS = $(am_greyfix_OBJECTS)
-greyfix_LDADD = $(LDADD)
+am_cryptolist_OBJECTS = cryptolist.$(OBJEXT) policy.$(OBJEXT)
+cryptolist_OBJECTS = $(am_cryptolist_OBJECTS)
+cryptolist_LDADD = $(LDADD)
 DEFAULT_INCLUDES = -I.@am__isrc@
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__depfiles_maybe = depfiles
@@ -57,8 +57,8 @@ COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
 CCLD = $(CC)
 LINK = $(CCLD) $(AM_CFLAGS) $(CFLAGS) $(AM_LDFLAGS) $(LDFLAGS) -o $@
-SOURCES = $(greyfix_SOURCES)
-DIST_SOURCES = $(greyfix_SOURCES)
+SOURCES = $(cryptolist_SOURCES)
+DIST_SOURCES = $(cryptolist_SOURCES)
 ETAGS = etags
 CTAGS = ctags
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
@@ -158,7 +158,7 @@ top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 AUTOMAKE_OPTIONS = foreign
 datastatedir = $(localstatedir)/lib
-greyfix_SOURCES = greyfix.c policy.c policy.h
+cryptolist_SOURCES = cryptolist.c policy.c policy.h
 all: config.h
 	$(MAKE) $(AM_MAKEFLAGS) all-am
 
@@ -237,9 +237,9 @@ uninstall-sbinPROGRAMS:
 
 clean-sbinPROGRAMS:
 	-test -z "$(sbin_PROGRAMS)" || rm -f $(sbin_PROGRAMS)
-greyfix$(EXEEXT): $(greyfix_OBJECTS) $(greyfix_DEPENDENCIES) 
-	@rm -f greyfix$(EXEEXT)
-	$(LINK) $(greyfix_OBJECTS) $(greyfix_LDADD) $(LIBS)
+cryptolist$(EXEEXT): $(cryptolist_OBJECTS) $(cryptolist_DEPENDENCIES) 
+	@rm -f cryptolist$(EXEEXT)
+	$(LINK) $(cryptolist_OBJECTS) $(cryptolist_LDADD) $(LIBS)
 
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)
@@ -247,7 +247,7 @@ mostlyclean-compile:
 distclean-compile:
 	-rm -f *.tab.c
 
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/greyfix.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/cryptolist.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/policy.Po@am__quote@
 
 .c.o:
