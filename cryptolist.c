@@ -36,7 +36,7 @@
  * will be tempfailed.  Use a setting of zero with caution, as it will
  * learn spammers as well as legitimate senders.
  **/
-#define DELAY_MAIL_SECS (60)	/* 1 minute */
+#define DELAY_MAIL_SECS (60*5)	/* 5 minutes */
 /**
  * This determines how many seconds of life are given to a record that
  * is created from a new mail [ip,from,to] triplet.  Note that the
@@ -69,8 +69,13 @@
 
  */
 
-#define TRANSPORT_NOTCRYPTED 0
-#define TRANSPORT_ENCRYPTED 1
+#define TRANSPORT_NOTCRYPTED (0)
+#define TRANSPORT_ENCRYPTED (1) /* Encypted but we don't know how */
+#define TRANSPORT_TLS1 (2) 
+#define TRANSPORT_TLS3 (3) 
+#define TRANSPORT_SSL1 (4) 
+#define TRANSPORT_SSL2 (5) 
+#define TRANSPORT_SSL3 (6) 
 
 struct triplet_data {
     time_t create_time;
@@ -889,6 +894,7 @@ main(int argc, const char **argv)
 	const char *protocol = 0, *state = 0, *ip, *from, *to, 
 	  *encryption_protocol = 0, *ccert_fingerprint = 0;
 	int crypted = 0;
+
 	if ((protocol = find_attribute("protocol_name"))
 	    && (state = find_attribute("protocol_state"))
 	    && (prefixp(protocol, STR_SMTP) || prefixp(protocol, STR_ESMTP))
@@ -899,11 +905,32 @@ main(int argc, const char **argv)
 	    encryption_protocol = find_attribute("encryption_protocol");
 	    ccert_fingerprint = find_attribute("ccert_fingerprint");
 	    if (encryption_protocol) {
-	      triplet_data.crypted = TRANSPORT_ENCRYPTED; // FIXME, figure out what it is
+	    // grumble - find_attribute returns a \n terminated string, not null
+	      int i;
+	      char actual_crypt[255];
+	      char actual_fingerprint[255]; // FIXME
+	      actual_crypt[0] = '\0';
+	      actual_fingerprint[0] = '\0';
+	      if(encryption_protocol[0] != '\n') {
+		crypted = triplet_data.crypted = TRANSPORT_ENCRYPTED; // FIXME, figure out what it is
+	      for(i = 0; i < 255 && encryption_protocol[i] != '\n'; i++) ;
+	      if(i > 0) { 
+		strncpy(actual_crypt,encryption_protocol,i); 
+		actual_crypt[i] = '\0';
+	      }
+
+	      for(i = 0; i < 255 && ccert_fingerprint[i] != '\n'; i++) ;
+
+	      if(i > 0) { 
+		strncpy(actual_fingerprint,ccert_fingerprint,i); 
+		actual_fingerprint[i] = '\0';
+	      }
+	      
+	      syslog(LOG_DEBUG,"Encryption: %s Fingerprint: %s", 
+		     actual_crypt ? actual_crypt : "NA",
+		     actual_fingerprint ? actual_fingerprint : "NA");  
 	    }
-	    syslog(LOG_DEBUG,"Encryption: %s Fingerprint: %s", 
-		   encryption_protocol ? encryption_protocol : "NA",
-		   ccert_fingerprint ? ccert_fingerprint : "NA");  
+	    }
 
 	    build_triplet_key(ip, from, to);
 	    if (process_smtp_rcpt(crypted)) {
