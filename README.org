@@ -49,15 +49,14 @@ type the following commands:
 </example>
 
 Edit Postfix's master configuration file, =/etc/postfix/master.cf=, and
-add the following (if you are running Solaris see below):
+add the following:
 
 <example>
 cryptolist    unix  -       n       n       -       -       spawn
   user=nobody argv=/usr/local/sbin/cryptolist -/ 24
 </example>
 
-Edit Postfix's main configuration file, =/etc/postfix/main.cf= and add
-the following (not for Solaris):
+Edit Postfix's main configuration file, =/etc/postfix/main.cf= and add the following (not for Solaris):
 
 <example>
 smtpd_recipient_restrictions = permit_mynetworks,
@@ -65,46 +64,22 @@ smtpd_recipient_restrictions = permit_mynetworks,
   check_policy_service unix:private/cryptolist
 </example>
 
-If there is already a =smtpd_recipient_restrictions= configuration line
-you should edit it rather than add a new one.  The important part for
-cryptolist is that you should add <code>check_policy_service
-unix:private/cryptolist</code> to it.
+If there is already a =smtpd_recipient_restrictions= configuration line you should edit it rather than add a new one.  The important part for cryptolist is that you should add <code>check_policy_service
+unix:private/cryptolist</code> to it. 
 
 Finally have postfix reload its configuration with <code>postfix
 reload</code>.
-
-** Solaris
-
-A user reported a [[http://trac.kim-minh.com/cryptolist/ticket/4][Corrupted DB on x64 Solaris 10 U4]].  If you want to
-help me track this, please contact [[mailto:kaplan+cryptolist@kim-minh.com][me]].
-
-http://www.postfix.org/SMTPD_POLICY_README.html has some important
-note for Solaris.  The important thing to note is that Solaris
-UNIX-domain sockets do not work reliably. Use TCP sockets instead.
-Here is what you should add to your =/etc/postfix/master.cf=:
-
-<example>
-127.0.0.1:9998  inet  n       n       n       -       9       spawn
-  user=nobody argv=/usr/local/sbin/cryptolist -/ 24
-</example>
-
-and to your =/etc/postfix/main.cf=:
-
-<example>
-smtpd_recipient_restrictions = permit_mynetworks,
-  reject_unauth_destination,
-  check_policy_service inet:127.0.0.1:9998
-127.0.0.1:9998_time_limit = 3600
-</example>
 
 * Theory of operation
 ** Why
    - Raise the bar even further for spammers!
 
-   - It is a pretty good assumption (currently) that almost anybody with starttls working
-   correctly knows what he's doing, so why not exchange email directly with such servers?
+   - It is a pretty good assumption (currently) that almost anybody with starttls working correctly knows what he's doing, so why not exchange email directly with such servers?
 
    - Why leak information to the rbl databases that you got an email from so-and-so?
+
+   - Introduce the possibility of checking validity of certificates more flexibly.
+
 ** Benefits
    - Send/recieve mail faster
    - Send/recieve mail more securely
@@ -143,10 +118,10 @@ cryptolist [-V] [-v] [-d] [-h <Berkeley DB home directory>]
 	with caution, as it will learn spammers as well as legitimate
 	senders.  Defaults to 3480 (58 minutes).
 
-    -c <seconds>, --clist-delay <seconds>
+    -c <seconds>, --cryplist-delay <seconds>
 
 	This determines how many seconds we will block inbound mail
-	that is from a previously unknown (ip, from, to) triplet, and 
+	that is from a previously unknown (ip, from, to) triplet, AND 
         is encrypted.  
 	If it is set to zero, incoming mail association will be learned,
 	but no deliveries will be tempfailed.  Use a setting of zero
@@ -189,7 +164,7 @@ cryptolist [-V] [-v] [-d] [-h <Berkeley DB home directory>]
         The action that will be used the first time a triplet passes
         greylisting.  Same expansion as for --reject-action.
 
-        The default is "PREPEND X-Greyfix: Greylisted by Grefix X.Y.Z
+        The default is "PREPEND X-Greyfix: Greylisted by Greyfix X.Y.Z
         for %d second%p.  See http://cryptolist.taht.net for
         more information."
 
@@ -237,7 +212,7 @@ greyfix daemons operate concurrently.
 ** Whitelisting
 You should use some whitelisting of some sort for some servers.  I'd love to do a survey of STARTTLS enabled servers.
 
-* TODO
+* TODO Tasks
 
    - Real documentation
    - Statistic collection
@@ -253,8 +228,7 @@ You should use some whitelisting of some sort for some servers.  I'd love to do 
 
 * BUGS
 Cryptolist inherits all the bugs from greyfix-0.3.9. Those bugs are filed on [[http://trac.kim-minh.com/greyfix/report][Greyfix's ticket page]].  
-Cryptolist probably has new ones. Those will be kept on github. I will try to incorporate changes 
-to greyfix and vice versa. 
+Cryptolist probably has new ones. Those will be kept on github. I will try to incorporate changes to greyfix and vice versa. 
 
 * Older versions
 
