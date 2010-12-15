@@ -1,13 +1,11 @@
 #title Cryptolist
-
+* About Cryptolist
 Cryptolist is a STARTTLS aware postfix policy daemon, based on the [[http://www.kim-minh.com/pub/greyfix/][Greyfix]] 0.3.9 greylisting policy daemon for [[http://www.postfix.org/][Postfix]] written by
 [[http://www.kim-minh.com/][Kim Minh Kaplan]], and Copyright 2007 by [[mailto:kaplan+greyfix@kim-minh.com][Kim Minh Kaplan]].
 
 [[http://projects.puremagic.com/greylisting/][Greylisting]] is an anti spam technique described by Evan Harris.  Postfix is a popular mail transport agent developed by [[http://www.porcupine.org/wietse/][Weitze Venema]].  
 
 Cryptolist uses Postfix policy mechanisms to enable greylisting with Postfix, with awareness of when a email exchange is encrypted. It allows additional greylisting policies to be enforced depending on the encrypted/unencrypted nature of the mail exchange.
-
-<contents depth="1">
 
 * Latest version
 
@@ -72,14 +70,14 @@ reload</code>.
 
 * Theory of operation
 ** Why
+
    - Raise the bar even further for spammers!
 
-   - It is a pretty good assumption (currently) that almost anybody with starttls working correctly knows what he's doing, so why not exchange email directly with such servers?
+   - It is a pretty good assumption (currently) that almost anybody with starttls working correctly knows what he's doing, so why not exchange email directly with such servers? Reward people for turning crypto on.
 
    - Why leak information to the rbl databases that you got an email from so-and-so?
 
    - Introduce the possibility of checking validity of certificates more flexibly.
-
 ** Benefits
    - Send/recieve mail faster
    - Send/recieve mail more securely
