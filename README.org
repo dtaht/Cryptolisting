@@ -6,7 +6,7 @@ Cryptolist is a STARTTLS aware postfix policy daemon, based on the
 
 [[http://projects.puremagic.com/greylisting/][Greylisting]] is an anti spam technique described by Evan Harris.  Postfix is a popular mail transport agent developed by [[http://www.porcupine.org/wietse/][Weitze Venema]].  
 
-Cryptolist uses Postfix policy mechanisms to enable greylisting with Postfix, with aware of when a email exchange is encrypted. It allows additional greylisting policies to be enforced depending on the encrypted/unencrypted nature of the mail exchange.
+Cryptolist uses Postfix policy mechanisms to enable greylisting with Postfix, with awareness of when a email exchange is encrypted. It allows additional greylisting policies to be enforced depending on the encrypted/unencrypted nature of the mail exchange.
 
 <contents depth="1">
 
@@ -35,7 +35,7 @@ None. See the [[ssh://git@github.com:dtaht/Cryptolisting.git][git repo]] on [[ht
    - [[http://www.oracle.com/database/berkeley-db/index.html][Berkeley DB 4.0]] or later.  Chances are you already have it.
 
 * Quickstart
-
+  
 Cryptolist uses GNU's build system.  To install the cryptolist daemon just
 type the following commands:
 
@@ -148,6 +148,16 @@ cryptolist [-V] [-v] [-d] [-h <Berkeley DB home directory>]
 	with caution, as it will learn spammers as well as legitimate
 	senders.  Defaults to 3480 (58 minutes).
 
+    -c <seconds>, --clist-delay <seconds>
+
+	This determines how many seconds we will block inbound mail
+	that is from a previously unknown (ip, from, to) triplet, and 
+        is encrypted.  
+	If it is set to zero, incoming mail association will be learned,
+	but no deliveries will be tempfailed.  Use a setting of zero
+	with caution, as it will learn spammers as well as legitimate
+	senders.  Defaults to 20 (20 seconds).
+
     -h <Berkeley DB home directory>, --home <Berkeley DB home directory>
 
 	Location of the Berkeley DB environment home location (the
@@ -177,17 +187,15 @@ cryptolist [-V] [-v] [-d] [-h <Berkeley DB home directory>]
 
         The default is "DEFER_IF_PERMIT Greylisted by Cryptolist X.Y.Z,
         try again in %d second%p.  See
-        http://www.kim-minh.com/pub/greyfix/ for more information.".
-        http://cvs.puremagic.com/viewcvs/greylisting/schema/whitelist_ip.txt?r1=1.10&r2=1.11
-        suggests that a 451 SMTP error code is a better idea.
-
+        http://cryptolist.taht.net for more information.".
+        
     -G <greylisted action>, --greylisted-action <greylisted action>
 
         The action that will be used the first time a triplet passes
         greylisting.  Same expansion as for --reject-action.
 
         The default is "PREPEND X-Greyfix: Greylisted by Grefix X.Y.Z
-        for %d second%p.  See http://www.kim-minh.com/pub/greyfix/ for
+        for %d second%p.  See http://cryptolist.taht.net for
         more information."
 
     -v, --verbose

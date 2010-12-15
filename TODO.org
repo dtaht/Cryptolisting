@@ -1,5 +1,12 @@
+* TODO Write more documentation
+  I tend to write the documentation first, and theory of operation, then the code...
+
+* TODO Implement new command line options
+  See above!
+* TODO Implement nolisting option
 * TODO Implement 451 reject code
 	As best as I can tell 450 is less correct. I DO want you to retry....
 * TODO Clean up code
-* TODO Implement new command line options
-* TODO Write more documentation
+* TODO TEST
+* TODO Audit
+* TODO Release
