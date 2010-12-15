@@ -1,7 +1,6 @@
 #title Cryptolist
 
-Cryptolist is a STARTTLS aware postfix policy daemon, based on the
-[[http://www.kim-minh.com/pub/greyfix/][Greyfix]] 0.3.9 greylisting policy daemon for [[http://www.postfix.org/][Postfix]] written by
+Cryptolist is a STARTTLS aware postfix policy daemon, based on the [[http://www.kim-minh.com/pub/greyfix/][Greyfix]] 0.3.9 greylisting policy daemon for [[http://www.postfix.org/][Postfix]] written by
 [[http://www.kim-minh.com/][Kim Minh Kaplan]], and Copyright 2007 by [[mailto:kaplan+greyfix@kim-minh.com][Kim Minh Kaplan]].
 
 [[http://projects.puremagic.com/greylisting/][Greylisting]] is an anti spam technique described by Evan Harris.  Postfix is a popular mail transport agent developed by [[http://www.porcupine.org/wietse/][Weitze Venema]].  
@@ -14,7 +13,7 @@ Cryptolist uses Postfix policy mechanisms to enable greylisting with Postfix, wi
 
 None. See the [[ssh://git@github.com:dtaht/Cryptolisting.git][git repo]] on [[https://github.com/dtaht/Cryptolisting][githu]]b for a current version. 
      
-* Features
+* Features Inherited from Greyfix
 
    - Low and tunable resource usage and high efficiency.  The program
      is written in C and uses Berkeley DB to track mailers.  By itself it
@@ -26,7 +25,9 @@ None. See the [[ssh://git@github.com:dtaht/Cryptolisting.git][git repo]] on [[ht
    - No administrative burden.  Everything happens "automagically".
    - No need for a database server.  Uses Berkeley DB which is already
      installed with most free Unix distributions.
+* Features specific to Cryptolist
 
+   - Separate greylisting policies for encrypted and non-encrypted transfers
 * Requirements
 
    - [[http://www.postfix.org/][Postfix 2.5]] or later.  Cryptolist is designed exclusively for it.
@@ -97,26 +98,20 @@ smtpd_recipient_restrictions = permit_mynetworks,
 </example>
 
 * Theory of operation
-  is OUT THERE
-
-  MX 10 mx1.example.org
-  MX 20 mx2.example.org
-
 ** Why
-   Great, now you've created twice the work for yourself.
-   
-   It is a pretty good assumption that almost anybody with starttls working
+   - Raise the bar even further for spammers!
+
+   - It is a pretty good assumption (currently) that almost anybody with starttls working
    correctly knows what he's doing, so why not exchange email directly with such servers?
 
-   Generate an ipset table
+   - Why leak information to the rbl databases that you got an email from so-and-so?
 ** Benefits
    - Send/recieve mail faster
    - Send/recieve mail more securely
    - Stop random spam COLD.
-** More usage
+** Usage
 
-   Way one: 
-   Very short term greylist (1 minute, by default) that sends the 
+   Encrypted transfers use very short term greylist (20 seconds, by default) - that makes it more likely that the sending mail server will retry and succeed immediately. 
 
 * Usage
 
@@ -218,7 +213,7 @@ cryptolist [-V] [-v] [-d] [-h <Berkeley DB home directory>]
 </example>
 
 * Notes
-
+** Autoconf defaults are poor
 GNU Autoconf's default value for =$(localstatedir)= is
 =/usr/local/var/lib= which is quite different from what most Unix
 distribution use.  You'll probably want to invoke configure like this:
@@ -239,9 +234,8 @@ If you log messages with DEBUG serverity you will see some messages
 saying something like "DEBUG: BDB-16: db_env->remove returned: Device
 busy".  They are *not* error messages and are normal when multiple
 greyfix daemons operate concurrently.
-
-You should use some whitelisting of some sort for some servers.  A
-good starting base is [[http://cvs.puremagic.com/viewcvs/greylisting/schema/whitelist_ip.txt?rev=HEAD][whitelist_ip.txt]].
+** Whitelisting
+You should use some whitelisting of some sort for some servers.  I'd love to do a survey of STARTTLS enabled servers.
 
 * TODO
 
@@ -258,8 +252,10 @@ good starting base is [[http://cvs.puremagic.com/viewcvs/greylisting/schema/whit
      http://lists.puremagic.com/pipermail/greylist-users/2004-September/000766.html).
 
 * BUGS
-Cryptolist inherits all the bugs from greyfix. Those bugs are filed on [[http://trac.kim-minh.com/greyfix/report][Greyfix's ticket page]].  
+Cryptolist inherits all the bugs from greyfix-0.3.9. Those bugs are filed on [[http://trac.kim-minh.com/greyfix/report][Greyfix's ticket page]].  
+Cryptolist probably has new ones. Those will be kept on github. I will try to incorporate changes 
+to greyfix and vice versa. 
 
 * Older versions
 
-  None yet. See the git repo
+  None yet. See the git repo!

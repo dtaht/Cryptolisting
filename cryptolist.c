@@ -37,6 +37,18 @@
  * learn spammers as well as legitimate senders.
  **/
 #define DELAY_MAIL_SECS (60*5)	/* 5 minutes */
+
+/**
+ * This determines how many seconds we will block inbound encrypted
+ * mail that is
+ * from a previously unknown (ip, from, to) triplet.  If it is set to
+ * zero, incoming mail association will be learned, but no deliveries
+ * will be tempfailed.  Use a setting of zero with caution, as it will
+ * learn spammers as well as legitimate senders.
+ **/
+
+#define DELAY_CMAIL_SECS (20)	/* 20 seconds */
+
 /**
  * This determines how many seconds of life are given to a record that
  * is created from a new mail [ip,from,to] triplet.  Note that the
@@ -66,7 +78,6 @@
 /*
   right now the crypto field has to be "discovered". I'd like, actually
   to track what crypto gets used. 
-
  */
 
 #define TRANSPORT_NOTCRYPTED (0)
@@ -605,7 +616,7 @@ process_smtp_rcpt(int crypted)
 	printf_action(cryptolisted_action_fmt, delay);
 	putchar('\n');
     } else {
-      // IN the case of unecrypted data
+      // In the case of unecrypted data
       if(delay < greylist_delay) {
 	triplet_data.block_count++;
 	fputs(STR_ACTION, stdout);
@@ -648,9 +659,11 @@ static void
 print_usage(FILE *f, const char *progname)
 {
     fprintf(f,
-	    "Usage: %s [-V] [-v] [-d] [-h <Berkeley DB home directory>] [-g <greylist delay>]\n"
-	    "    [-b <bloc maximum idle>] [-p <pass maximum idle>] [-r <reject action>]\n"
-	    "    [-G <greylisted action>] [-/ <network bits>] [--dump-triplets] [--help]\n"
+	    "Usage: %s [-V] [-v] [-d] [-h <Berkeley DB home directory>]\n" 
+            "[-g <greylist delay>] [-G <greylisted action>] [-r <reject action>]\n"	    
+            "[-c <cryplist delay>] [-C <cryplisted action>] [-R <reject action>]\n"	    
+            "[-b <bloc maximum idle>] [-p <pass maximum idle>] \n"
+	    "[-/ <network bits>] [--dump-triplets] [--help]\n"
 	    "\n"
 	    "    -b <seconds>, --bloc-max-idle <seconds>\n"
 	    "\n"
