@@ -1,8 +1,9 @@
 AC_INIT([cryptolist], [0.3.9])
 AC_CONFIG_HEADERS([config.h])
-AC_PREREQ(2.59)
+AC_PREREQ(2.67)
 AC_CONFIG_SRCDIR([cryptolist.c])
-AM_INIT_AUTOMAKE
+AC_PROG_CC
+AM_INIT_AUTOMAKE()
 AC_ARG_WITH(berkeleydb-includedir,
 	AS_HELP_STRING([--with-berkeleydb-includedir],
 		       [Specify location of Berkeley DB header files]),
