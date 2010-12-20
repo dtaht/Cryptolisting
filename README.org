@@ -1,4 +1,15 @@
-#title Cryptolist
+#+TITLE:     CryptoList
+#+AUTHOR:    Dave Täht
+#+EMAIL:     d at taht.net
+#+DATE:      <2010-12-20 Mon>
+#+LANGUAGE:  en
+#+TEXT:      Encouraging encrypted email transfers with greylisting
+#+OPTIONS:   H:1 num:nil todo:nil toc:t \n:nil @:t ::t |:t ^:t -:t f:t *:t TeX:t LaTeX:nil skip:nil d:nil tags:not-in-toc
+#+INFOJS_OPT: view:nil toc:t ltoc:t mouse:underline buttons:0 path:org-info.js
+#+LINK_UP: 
+#+LINK_HOME:
+#+STYLE:    <link rel="stylesheet" type="text/css" href="worg.css" />
+#+STYLE:    <script type="text/javascript" src="org-info.js"> 
 * About Cryptolist
 Cryptolist is a STARTTLS aware postfix policy daemon, based on the [[http://www.kim-minh.com/pub/greyfix/][Greyfix]] 0.3.9 greylisting policy daemon for [[http://www.postfix.org/][Postfix]] written by
 [[http://www.kim-minh.com/][Kim Minh Kaplan]], and Copyright 2007 by [[mailto:kaplan+greyfix@kim-minh.com][Kim Minh Kaplan]].
