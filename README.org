@@ -28,7 +28,7 @@ None. See the [[ssh://git@github.com:dtaht/Cryptolisting.git][git repo]] on [[ht
    - Separate greylisting policies for encrypted and non-encrypted transfers
 * Requirements
 
-   - [[http://www.postfix.org/][Postfix 2.5]] or later.  Cryptolist is designed exclusively for it.
+   - [[http://www.postfix.org/][Postfix 2.3]] or later.  Cryptolist is designed exclusively for it.
      It will *not* work with other mailers.
 
    - [[http://www.oracle.com/database/berkeley-db/index.html][Berkeley DB 4.0]] or later.  Chances are you already have it.

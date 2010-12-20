@@ -108,8 +108,11 @@ static struct triplet_data triplet_data;
 static int deadlock_detect = 0;
 
 static unsigned long greylist_delay = DELAY_MAIL_SECS;
+static unsigned long cryptlist_delay = DELAY_CMAIL_SECS;
 static unsigned long bloc_max_idle = AUTO_RECORD_LIFE_SECS;
 static unsigned long pass_max_idle = UPDATE_RECORD_LIFE_SECS;
+static block_unencrypted = 0;
+
 /* The sequence "%d" is replaced by the number of seconds.  The
    sequence "%p" is replaced by the singular_string if the delay is
    one second, by plural_string otherwise.  The sequence "%s" is
@@ -117,15 +120,22 @@ static unsigned long pass_max_idle = UPDATE_RECORD_LIFE_SECS;
    replaced by the receiving domain name.  The sequence "%%" is
    replaced by the single character "%".  Other sequences beginning
    with "%" are invalid. */
-static const char *reject_action_fmt = "DEFER_IF_PERMIT Cryptolisted by "
-    PACKAGE_STRING ", PLEASE enable STARTTLS on your email server. The bits you save may be your own. Delayed: %d second%p."
-    "  See http://cryptolist.taht.net for more information.";
-static const char *greylisted_action_fmt = "PREPEND X-CRYPTED: Non-encrypted transfer stalled by "
+
+static const char *reject_action_fmt = 
+  "451 Cryptolisted by "
+   PACKAGE_STRING ", Thanks for using STARTTLS. Delayed: %d second%p."
+    "  See http://cryptolist.taht.net.";
+static const char *reject_unencrypted_action_fmt = 
+  "451 Cryptolisted by "
+   PACKAGE_STRING ", PLEASE enable STARTTLS on your email server. The bits you save may be your own. Delayed: %d second%p."
+    "  See http://cryptolist.taht.net";
+static const char *greylisted_action_fmt = "PREPEND X-Nocrypt: Non-encrypted transfer stalled by "
     PACKAGE_STRING " for %d second%p."
-    "  See http://cryptolist.taht.net for more information.";
-static const char *cryptolisted_action_fmt = "PREPEND X-CRYPTED: Encrypted transfer stalled by "
+    "  See http://cryptolist.taht.net";
+static const char *cryptlisted_action_fmt = "PREPEND X-Crypt: Encrypted transfer stalled by "
     PACKAGE_STRING " for %d second%p."
-    "  See http://cryptolist.taht.net for more information.";
+    "  See http://cryptolist.taht.net";
+
 static const char *singular_string = "", *plural_string = "s";
 /* As we store IP addresses in Postfix's format, to obtain the network
  address we first strip `ipv4_network_strip_bytes' numbers (between 0
@@ -599,11 +609,10 @@ process_smtp_rcpt(int crypted)
 	    puts(STR_ACTION "WARN " PACKAGE_STRING " is not working properly");
 	return 1;
     }
-    // FIXME this could overwrite
     get_grey_data();
     if (triplet_data.crypted != crypted) {
-      syslog(LOG_DEBUG,"crypted field changed for some reason");
       triplet_data.crypted = crypted;
+      if (debug_me) syslog(LOG_DEBUG,"crypted field changed for some reason");
     }
     delay = difftime(triplet_data.access_time, triplet_data.create_time);
 
@@ -612,15 +621,28 @@ process_smtp_rcpt(int crypted)
      */
 
     if(crypted > 0) {
-	fputs(STR_ACTION, stdout);
-	printf_action(cryptolisted_action_fmt, delay);
-	putchar('\n');
-    } else {
-      // In the case of unecrypted data
-      if(delay < greylist_delay) {
+      if(delay < cryptlist_delay) {
 	triplet_data.block_count++;
 	fputs(STR_ACTION, stdout);
-	printf_action(reject_action_fmt, greylist_delay - delay);
+	printf_action(reject_action_fmt, cryptlist_delay - delay);
+	putchar('\n');
+      }
+      else if (triplet_data.pass_count++)
+	puts(STR_ACTION "DUNNO");
+      else {
+	fputs(STR_ACTION, stdout);
+	printf_action(cryptlisted_action_fmt, delay);
+	putchar('\n');
+      }
+    } else {
+      if(delay < greylist_delay || block_unencrypted) {
+	triplet_data.block_count++;
+	fputs(STR_ACTION, stdout);
+	if(block_unencrypted == 1) {
+	  printf_action(reject_unencrypted_action_fmt, (3600*24)); // block it for a day
+	} else {
+	  printf_action(reject_unencrypted_action_fmt, greylist_delay - delay);
+	}
 	putchar('\n');
       }
       else if (triplet_data.pass_count++)
@@ -661,7 +683,7 @@ print_usage(FILE *f, const char *progname)
     fprintf(f,
 	    "Usage: %s [-V] [-v] [-d] [-h <Berkeley DB home directory>]\n" 
             "[-g <greylist delay>] [-G <greylisted action>] [-r <reject action>]\n"	    
-            "[-c <cryplist delay>] [-C <cryplisted action>] [-R <reject action>]\n"	    
+            "[-c <cryptlist delay>] [-C <cryptlisted action>] [-R <reject action>]\n"	    
             "[-b <bloc maximum idle>] [-p <pass maximum idle>] \n"
 	    "[-/ <network bits>] [--dump-triplets] [--help]\n"
 	    "\n"
@@ -679,7 +701,16 @@ print_usage(FILE *f, const char *progname)
 	    "\n"
 	    "    -g <seconds>, --greylist-delay <seconds>\n"
 	    "\n"
-	    "	This determines how many seconds we will block inbound mail\n"
+	    "	This determines how many seconds we will block unencrypted \n"
+	    "	inbound mail from a previously unknown (ip, from, to) triplet.  If\n"
+	    "	it is set to zero, incoming mail association will be learned,\n"
+	    "	but no deliveries will be tempfailed.  Use a setting of zero\n"
+	    "	with caution, as it will learn spammers as well as legitimate\n"
+	    "	senders.  Defaults to %d.\n"
+	    "\n"
+	    "    -c <seconds>, --cryptlist-delay <seconds>\n"
+	    "\n"
+	    "	This determines how many seconds we will block crypted inbound mail\n"
 	    "	that is from a previously unknown (ip, from, to) triplet.  If\n"
 	    "	it is set to zero, incoming mail association will be learned,\n"
 	    "	but no deliveries will be tempfailed.  Use a setting of zero\n"
@@ -721,6 +752,14 @@ print_usage(FILE *f, const char *progname)
 	    "\n"
 	    "        The default is \"%s\"\n"
 	    "\n"
+	    "    -C <cryptlisted action>, --cryptlisted-action <cryptlisted action>\n"
+	    "\n"
+	    "        The action that will be used the first time a triplet passes\n"
+	    "        greylisting for an encrypted transfer." 
+            "        Same expansion as for --reject-action.\n"
+	    "\n"
+	    "        The default is \"%s\"\n"
+	    "\n"
 	    "    -v, --verbose\n"
 	    "\n"
 	    "	Verbose logging\n"
@@ -734,12 +773,16 @@ print_usage(FILE *f, const char *progname)
 	    "	Only consider the first <nbits> bits of an IPv4 address.\n"
 	    "	Defaults to 32 i.e. the whole adresse is significant.\n"
 	    "\n"
+	    "    -B \n"
+	    "\n"
+	    "	Block unencrypted mail\n"
+	    "\n"
 	    "    --dump-triplets\n"
 	    "\n"
 	    "        Dump the triplets database to stdout.  Mostly for debugging\n"
 	    "        purposes.\n",
-	    progname, AUTO_RECORD_LIFE_SECS, DELAY_MAIL_SECS,
-	    UPDATE_RECORD_LIFE_SECS, reject_action_fmt, greylisted_action_fmt);
+	    progname, AUTO_RECORD_LIFE_SECS, DELAY_MAIL_SECS, DELAY_CMAIL_SECS,
+	    UPDATE_RECORD_LIFE_SECS, reject_action_fmt, greylisted_action_fmt, cryptlisted_action_fmt);
 }
 
 /* 
@@ -792,7 +835,7 @@ main(int argc, const char **argv)
     else
 	progname = argv[0];
     openlog(progname, LOG_PID, LOG_MAIL);
-    for (i = 1; i < argc; i++) {
+    for (i = 1; i < argc; i++) {      
 	if (optp(argv[i], "-d", "--debug"))
 	    debug_me = 1;
 	else if (optp(argv[i], "-v", "--verbose"))
@@ -815,6 +858,14 @@ main(int argc, const char **argv)
 	    greylist_delay = strtoul(argv[i], &p, 10);
 	    if (*p)
 		fatal("Invalid argument to --greylist-delay.  "
+		      "Integer value expected");
+	}
+	else if (optp(argv[i], "-c", "--cryptlist-delay")) {
+	    if (++i >= argc)
+		fatal("Missing argument to --cryptlist-delay");
+	    cryptlist_delay = strtoul(argv[i], &p, 10);
+	    if (*p)
+		fatal("Invalid argument to --cryptlist-delay.  "
 		      "Integer value expected");
 	}
 	else if (optp(argv[i], "-h", "--home")) {
@@ -843,13 +894,26 @@ main(int argc, const char **argv)
 		fatal("Missing argument to --reject-action");
 	    reject_action_fmt = argv[i];
 	}
+	else if (optp(argv[i], "-R", "--reject-unencrypted-action")) {
+	    if (++i >= argc)
+		fatal("Missing argument to --reject-unencrypted-action");
+	    reject_unencrypted_action_fmt = argv[i];
+	}
 	else if (optp(argv[i], "-G", "--greylisted-action")) {
 	    if (++i >= argc)
 		fatal("Missing argument to --greylisted-action");
 	    greylisted_action_fmt = argv[i];
 	}
+	else if (optp(argv[i], "-C", "--cryptlisted-action")) {
+	    if (++i >= argc)
+		fatal("Missing argument to --greylisted-action");
+	    cryptlisted_action_fmt = argv[i];
+	}
 	else if (loptp(argv[i], "--dump-triplets")) {
 	  dump_triplets = 1;
+	}
+	else if (optp(argv[i],"-B","--block-unencrypted")) {
+	  block_unencrypted = 1;
 	}
 	else {
 	    fprintf(stderr, "Unknown option \"%s\"\n", argv[i]);

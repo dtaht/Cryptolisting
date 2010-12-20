@@ -103,7 +103,13 @@ forget_policy_request()
 	policy_request_fill = 0;
 }
 
+// FIXME Grumble. We need a cleaner way to pass this to printf
+
+#define MSG_ALLOCATE_SIZET8_BYTES "allocate %lu bytes for request buffer"
+#define MSG_ALLOCATE_SIZET4_BYTES "allocate %u bytes for request buffer"
+
 /* Read in a new SMTPD access policy request */
+
 const char *
 read_policy_request(int in)
 {
@@ -118,8 +124,11 @@ read_policy_request(int in)
 	    else
 		policy_request_size = BUFSIZ;
 	    if (debug_me)
-		syslog(LOG_DEBUG,
-		       "allocate %u bytes for request buffer",
+	      if(sizeof(size_t) == 8) syslog(LOG_DEBUG,
+		       MSG_ALLOCATE_SIZET8_BYTES,
+		       policy_request_size);
+	      if(sizeof(size_t) == 4) syslog(LOG_DEBUG,
+		       MSG_ALLOCATE_SIZET4_BYTES,
 		       policy_request_size);
 	    policy_request = xrealloc(policy_request, policy_request_size);
 	}
