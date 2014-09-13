@@ -25,6 +25,8 @@
 #include <unistd.h>
 #include <syslog.h>
 #include <sys/stat.h>
+#include <arpa/inet.h>
+
 #include <db.h>
 
 #include "policy.h"
@@ -70,9 +72,21 @@
 
 #define DEF_DB_HOME DATA_STATE_DIR"/"PACKAGE
 
-#define DB_FILE_NAME "tls_triplets.db"
+#define DB_FILE_NAME_V0 "tls_triplets.db"
+#define DB_FILE_NAME "tls_triplets-1.db"
 #define SEP '\000'
 
+/* First byte of the DB keys */
+enum dbkey_type_enum {
+    DBKEY_T_RAW = 0,
+    DBKEY_T_IP4,
+    DBKEY_T_IP6
+};
+
+#define IPV4_BITS (8 * sizeof(struct in_addr))
+#define IPV6_BITS (8 * sizeof(struct in6_addr))
+
+#define MAX(a,b) (((a)>(b))?(a):(b))
 #define prefixp(s,p) (!strncmp((s),(p),sizeof(p)-1))
 
 /*
@@ -96,11 +110,12 @@ struct triplet_data {
     int crypted;
 };
 
+/* Filled in with a message when premature exit is requested from the
+   signal handler */
+void *exit_requested = NULL;
+static int exit_requested_status = 0;
 
 static const char *db_home = DEF_DB_HOME;
-
-static DB_ENV *dbenv = 0;
-static DB *db = 0;
 
 static DBT dbkey = { 0 };
 static DBT dbdata = { 0 };
@@ -137,11 +152,8 @@ static const char *cryptlisted_action_fmt = "PREPEND X-Crypt: Encrypted transfer
     "  See http://cryptolist.taht.net";
 
 static const char *singular_string = "", *plural_string = "s";
-/* As we store IP addresses in Postfix's format, to obtain the network
- address we first strip `ipv4_network_strip_bytes' numbers (between 0
- and 4) then we apply `ipv4_network_mask' on the last byte. */
-static unsigned int ipv4_network_strip_bytes;
-static unsigned int ipv4_network_mask;
+static unsigned int ipv4_network_prefix = IPV4_BITS;
+static unsigned int ipv6_network_prefix = IPV6_BITS;
 /* --dump-triplets: dump the triplet database to stdout and exit */
 static int dump_triplets;
 
@@ -151,6 +163,8 @@ static int muffle_error = 0;
 /* When Cryptolist detects a problem, let emails pass through and log. */
 static jmp_buf defect_jmp_buf;
 static const char *defect_msg = 0;
+
+static int upgrade_from_v0(DB_ENV *);
 
 /**********************************************************************
  * Berkeley DB routines
@@ -166,7 +180,7 @@ log_db_error(const char *msg, int error)
 }
 
 #if DB_VERSION_MAJOR == 4 && DB_VERSION_MINOR < 3 || DB_VERSION_MAJOR < 4
-/* http://www.oracle.com/technology/documentation/berkeley-db/db/ref/upgrade.4.3/err.html */
+/* http://docs.oracle.com/cd/E17076_02/html/upgrading/upgrade_4_3_err.html */
 static void
 db_errcall_fcn(const char *errpfx, char *msg)
 #else
@@ -178,10 +192,18 @@ db_errcall_fcn(const DB_ENV *dbenv, const char *errpfx, const char *msg)
 }
 
 static int
+call_db(int err, const char *msg)
+{
+    if (err)
+	log_db_error(msg, err);
+    return err;
+}
+
+static int
 db_open(DB *db, const char *file, const char *database,
 	DBTYPE type, u_int32_t flags, int mode)
 {
-    /* http://www.oracle.com/technology/documentation/berkeley-db/db/ref/upgrade.4.1/fop.html
+    /* http://docs.oracle.com/cd/E17076_02/html/upgrading/upgrade_4_1_fop.html
        To upgrade, applications must add a DB_TXN parameter in the
        appropriate location for the DB->open method calls [...] the
        second argument */
@@ -192,58 +214,84 @@ db_open(DB *db, const char *file, const char *database,
 #endif
 }
 
+/* Return the current Berkeley DB environment. If "force" is not zero
+   then force creating the environment if it does not yet exist. Note
+   that if "force" is zero then the function can not fail. */
 static int
-prepare_env()
+get_dbenv(DB_ENV **dbenv_ret, int force)
 {
-    int rc;
-    rc = db_env_create(&dbenv, 0);
-    if (rc)
-	log_db_error("db_env_create", rc);
-    else {
-	dbenv->set_errcall(dbenv, db_errcall_fcn);
-	rc = dbenv->set_lk_detect(dbenv, DB_LOCK_YOUNGEST);
+    static DB_ENV *dbenv = NULL;
+    int rc = 0;
+    if (dbenv == NULL && force) {
+	rc = call_db(db_env_create(&dbenv, 0), "db_env_create");
+	if (!rc) {
+	    dbenv->set_errcall(dbenv, db_errcall_fcn);
+	    rc = call_db(dbenv->set_lk_detect(dbenv, DB_LOCK_YOUNGEST),
+			 "dbenv->set_lk_detect DB_LOCK_YOUNGEST, expired triplets will not be deleted");
+	    if (!rc)
+		deadlock_detect = 1;
+	    rc = call_db(dbenv->open(dbenv, db_home,
+#ifdef DB_REGISTER
+				     /* DB_REGISTER appears in Berkeley DB 4.4 [#11511]
+					http://docs.oracle.com/cd/E17076_02/html/upgrading/changelog_4_4_16.html#idp51982816 */
+				     DB_REGISTER | DB_RECOVER |
+#endif
+				     DB_INIT_TXN | DB_INIT_LOCK | DB_INIT_LOG | DB_INIT_MPOOL | DB_CREATE, 0),
+			 "dbenv->open");
+	    if (rc) {
+		dbenv->close(dbenv, 0);
+		dbenv = 0;
+	    }
+	}
+    }
+    if (dbenv_ret)
+	*dbenv_ret = dbenv;
+    return rc;
+}
+
+static int
+get_db(DB **db_ret, int force)
+{
+    static DB *db = NULL;
+    int rc = 0;
+    if (db == NULL && force) {
+	DB_ENV *dbenv;
+	rc = get_dbenv(&dbenv, force);
 	if (rc)
-	    log_db_error("dbenv->set_lk_detect DB_LOCK_YOUNGEST, expired triplets will not be deleted", rc);
-	else
-	    deadlock_detect = 1;
-	rc = dbenv->open(dbenv, db_home,
-			 DB_INIT_LOCK | DB_INIT_MPOOL | DB_CREATE, 0);
-	if (rc) {
-	    log_db_error("dbenv->open", rc);
-	    dbenv->close(dbenv, 0);
-	    dbenv = 0;
+	    return rc;
+	rc = call_db(db_create(&db, dbenv, 0), "db_create");
+	if (!rc) {
+	    /* XXX do not use call_db: it is normal for this call to
+	       fail with ENOENT if the database has to be upgraded or
+	       created from scratch */
+	    rc = db_open(db, DB_FILE_NAME, NULL,
+			 DB_BTREE, DB_AUTO_COMMIT, 0644);
+	    if (rc == ENOENT) {
+		/* Try and upgrade from an old version */
+		rc = call_db(upgrade_from_v0(dbenv), "upgrade_from_v0");
+		if (!rc)
+		    rc = call_db(db_open(db, DB_FILE_NAME, NULL, DB_BTREE, DB_AUTO_COMMIT | DB_CREATE, 0644),
+				 "db->open 2");
+	    }
+	    else if (rc)
+		call_db(rc, "db->open");
+	    if (rc) {
+		db->close(db, 0);
+		db = 0;
+	    }
 	}
     }
+    if (db_ret)
+	*db_ret = db;
     return rc;
 }
 
-static int
-prepare_db()
-{
-    int rc;
-    rc = db_create(&db, dbenv, 0);
-    if (rc)
-	log_db_error("db_create", rc);
-    else {
-	rc = db_open(db, DB_FILE_NAME, NULL, DB_BTREE, DB_CREATE, 0644);
-	if (rc) {
-	    log_db_error("db->open", rc);
-	    db->close(db, 0);
-	    db = 0;
-	}
-    }
-    return rc;
-}
-
-static int
+static void
 initialize()
 {
-    int rc;
     char *version;
     int major, minor, patch;
-    rc = policy_initialize();
-    if (rc)
-	return rc;
+    policy_initialize();
     version = db_version(&major, &minor, &patch);
     if (DB_VERSION_MAJOR != major || DB_VERSION_MINOR != minor) {
 	syslog(LOG_ERR,
@@ -269,33 +317,31 @@ initialize()
     dbdata.size = sizeof triplet_data;
     dbdata.ulen = sizeof triplet_data;
     dbdata.flags = DB_DBT_USERMEM;
-    rc = prepare_env();
-    if (!rc)
-	rc = prepare_db();
-    return rc;
 }
 
 static void
 cleanup()
 {
     int rc;
+    DB *db;
+    DB_ENV *dbenv;
+    rc = get_db(&db, 0);
+    assert(! rc);
+    rc = get_dbenv(&dbenv, 0);
+    assert(! rc);
     if (dbkey.data)
 	free(dbkey.data);
-    if (db) {
-	rc = db->close(db, 0);
-	if (rc)
-	    log_db_error("DB close", rc);
-    }
-    rc = db_create(&db, dbenv, 0);
-    if (!rc)
-	if (! db->remove(db, "tls_stats.db", 0, 0))
-	    syslog(LOG_NOTICE, "Unused database tls_stats.db removed");
-    db = 0;
+    if (db)
+	call_db(db->close(db, 0), "DB close");
     if (dbenv) {
-	rc = dbenv->close(dbenv, 0);
-	dbenv = 0;
-	if (rc)
-	    log_db_error("DB_ENV close", rc);
+	rc = call_db(db_create(&db, dbenv, 0), "db_create");
+	if (!rc)
+	    if (! db->remove(db, "tls_stats.db", 0, 0))
+		syslog(LOG_NOTICE, "Unused database tls_stats.db removed");
+	call_db(dbenv->txn_checkpoint(dbenv, 100 * 1024, 24 * 60, 0),
+		"txn_checkpoint");
+	call_db(dbenv->log_archive(dbenv, NULL, DB_ARCH_REMOVE), "log_archive");
+	call_db(dbenv->close(dbenv, 0), "DB_ENV close");
     }
     policy_cleanup();
 }
@@ -307,61 +353,117 @@ fatal(const char *msg)
     abort();
 }
 
+/* Decode the client address from the dbkey into a static buffer */
+static const char *
+db_key_ntop(const char *data)
+{
+    static char buffer[MAX(INET_ADDRSTRLEN, INET6_ADDRSTRLEN)];
+    switch ((enum dbkey_type_enum)*data) {
+    case DBKEY_T_RAW:
+	return data + 1;
+    case DBKEY_T_IP4:
+	if (!inet_ntop(AF_INET, data + 1, buffer, sizeof(buffer)))
+	    fatal("inet_ntop AF_INET failed");
+	return buffer;
+    case DBKEY_T_IP6:
+	if (!inet_ntop(AF_INET6, data + 1, buffer, sizeof(buffer)))
+	    fatal("inet_ntop AF_INET6 failed");
+	return buffer;
+    }
+    syslog(LOG_ERR, "inet_ntop unexpected type %hhd", *data);
+    abort();
+}
+
 static void
 run_expiry()
 {
+    DB_ENV *dbenv;
+    DB *db;
+    DB_TXN *txn;
     DBC *dbcp;
     int rc;
     time_t now;
+    DBT key = { 0 };
     unsigned int count = 0;
+    if (exit_requested)
+	return;
     /* Cursor operations can hold several locks and therefore deadlock
        so don't run expiry if deadlock detection does not work
-       http://www.oracle.com/technology/documentation/berkeley-db/db/ref/lock/notxn.html */
+       http://docs.oracle.com/cd/E17076_02/html/programmer_reference/lock_notxn.html */
+    rc = get_db(&db, 0);
+    assert(! rc);
     if (db == 0 || deadlock_detect == 0)
 	return;
+    rc = get_dbenv(&dbenv, 0);
+    assert(! rc && dbenv);
     if (time(&now) == (time_t)-1) {
 	syslog(LOG_ERR, "time failed during run_expiry");
 	return;
     }
     muffle_error++;
-    if (rc = db->cursor(db, 0, &dbcp, 0))
-	log_db_error("db->cursor failed during expiry run", rc);
-    else {
-	DBT key = { 0 };
-	while ((rc = dbcp->c_get(dbcp, &key, &dbdata, DB_NEXT | DB_RMW)) == 0) {
-	    time_t ref_time;
-	    double age_max, age;
-	    if (triplet_data.pass_count) {
-		ref_time = triplet_data.access_time;
-		age_max = pass_max_idle;
-	    }
-	    else {
-		ref_time = triplet_data.create_time;
-		age_max = bloc_max_idle;
-	    }
-	    age = difftime(now, ref_time);
-	    if (age > age_max) {
-		if (opt_verbose)
-		    syslog(LOG_INFO, "Expiring %s %s after %.0f seconds idle",
-			   key.data,
-			   triplet_data.pass_count ? "pass" : "block", age);
-		if (rc = dbcp->c_del(dbcp, 0))
-		    log_db_error("dbcp->c_del failed", rc);
-		else
-		    count++;
-	    }
-	}
+    rc = dbenv->txn_begin(dbenv, NULL, &txn, DB_TXN_NOWAIT);
+    if (rc) {
 	if (rc == DB_LOCK_DEADLOCK)
 	    syslog(LOG_DEBUG, "skipping concurrent expiry avoids "
 		   "deadlocks and unnecessary work");
-	else if (rc != DB_NOTFOUND)
-	    log_db_error("dbcp->c_get failed", rc);
-	if (rc = dbcp->c_close(dbcp))
-	    log_db_error("dbcp->c_close failed", rc);
+	else
+	    log_db_error("txn_begin failed during run_expiry", rc);
+	goto out;
     }
-    muffle_error--;
+#if DB_VERSION_MAJOR >= 5
+    call_db(txn->set_priority(txn, 50), "TXN->set_priority");
+#endif
+    rc = call_db(db->cursor(db, txn, &dbcp, 0),
+		 "db->cursor failed during expiry run");
+    if (rc)
+	goto txn_fail;
+    while ((rc = dbcp->c_get(dbcp, &key, &dbdata, DB_NEXT | DB_RMW)) == 0) {
+	time_t ref_time;
+	double age_max, age;
+	if (triplet_data.pass_count) {
+	    ref_time = triplet_data.access_time;
+	    age_max = pass_max_idle;
+	}
+	else {
+	    ref_time = triplet_data.create_time;
+	    age_max = bloc_max_idle;
+	}
+	age = difftime(now, ref_time);
+	if (age > age_max) {
+	    if (opt_verbose) {
+		syslog(LOG_INFO, "Expiring %s %s after %.0f seconds idle",
+		       db_key_ntop(key.data),
+		       triplet_data.pass_count ? "pass" : "block", age);
+	    }
+	    rc = call_db(dbcp->c_del(dbcp, 0), "dbcp->c_del failed");
+	    if (rc)
+		goto cursor_fail;
+	    count++;
+	}
+	if (exit_requested)
+	    break;
+    }
+    if (rc && rc != DB_NOTFOUND) {
+	if (rc == DB_LOCK_DEADLOCK)
+	    syslog(LOG_NOTICE, "Aborting concurrent expiry due to deadlock");
+	else
+	    log_db_error("dbcp->c_get failed", rc);
+	goto cursor_fail;
+    }
+    if (call_db(dbcp->c_close(dbcp), "dbcp->c_close failed"))
+	goto txn_fail;
+    call_db(txn->commit(txn, 0), "commit failed in run_expiry");
     if (count)
 	syslog(LOG_NOTICE, "Expired %u triplets", count);
+    goto out;
+
+  cursor_fail:
+    call_db(dbcp->c_close(dbcp), "dbcp->c_close failed");
+  txn_fail:
+    call_db(txn->abort(txn), "failed to abort");
+  out:
+    muffle_error--;
+    return;
 }
 
 /* Write the result of calling ctime(3) on stdout without the trailing
@@ -378,34 +480,52 @@ write_ctime(const time_t *time)
 	fputs(s, stdout);
 }
 
+/* FIXME should this be wrapped in an explicit transaction? */
 static void
 do_dump_triplets()
 {
+    DB *db;
     DBC *dbcp;
     int rc;
     DBT key = { 0 },
 	data = { 0 };
+    rc = get_db(&db, 1);
+    if (rc) {
+	fprintf(stderr, "DBD-%d: failed to open database\n", rc);
+	return;
+    }
     rc = db->cursor(db, 0, &dbcp, 0);
     if (rc)
 	fprintf(stderr, "DBD-%d: db->cursor failed: %s\n",
 		rc, db_strerror(rc));
     else {
-	while ((rc = dbcp->c_get(dbcp, &key, &data, DB_NEXT)) == 0) {
-	    const char *s = key.data;
+	while (! exit_requested
+	       && (rc = dbcp->c_get(dbcp, &key, &data, DB_NEXT)) == 0) {
+	    const char *const start = key.data, *s = start;
 	    const struct triplet_data *t = data.data;
 	    printf("%d\t", t->crypted);
+	    printf("%s\t", db_key_ntop(s));
+	    switch ((enum dbkey_type_enum)*s++) {
+	    case DBKEY_T_RAW:
+		s += strlen(s) + 1;
+		break;
+	    case DBKEY_T_IP4:
+		s += IPV4_BITS / 8;
+		break;
+	    case DBKEY_T_IP6:
+		s += IPV6_BITS / 8;
+		break;
+	    }
 	    printf("%s\t", s);
 	    s += strlen(s) + 1;
-	    printf("%s\t", s);
-	    s += strlen(s) + 1;
-	    fwrite(s, 1, key.size - (s - (char *)key.data), stdout);
+	    fwrite(s, 1, key.size - (s - start), stdout);
 	    putchar('\t');
 	    write_ctime(&t->create_time);
 	    putchar('\t');
 	    write_ctime(&t->access_time);
 	    printf("\t%lu\t%lu\n", t->block_count, t->pass_count);
 	}
-	if (rc != DB_NOTFOUND)
+	if (rc && rc != DB_NOTFOUND)
 	    fprintf(stderr, "DBD-%d: dbcp->c_get failed: %s\n",
 		    rc, db_strerror(rc));
 	rc = dbcp->c_close(dbcp);
@@ -415,77 +535,204 @@ do_dump_triplets()
     }
 }
 
-static void
-build_triplet_key(const char *ip, const char *from, const char *to)
+static void *
+ensure_dbkey_reserve(size_t total)
 {
-    const char *endip = strchr(ip, '\n'),
-	*endfrom = strchr(from, '\n'),
-	*endto = strchr(to, '\n');
-    size_t lenfrom = endfrom - from,
-	lento = endto - to;
-    int ipv4 = memchr(ip, '.', endip - ip) != 0;
-    size_t lenip, total;
-    char *buf;
-    /* Mangle the IP address so that only the required prefix is used */
-    if (ipv4 && ipv4_network_strip_bytes > 0) {
-	const char *p = endip;
-	unsigned int i = ipv4_network_strip_bytes;
-	while (i && --p > ip)
-	    if (*p == '.')
-		i--;
-	if (i <= 1)
-	    endip = p;
-	else {
-	    ipv4 = 0;
-	    syslog(LOG_ERR, "Could not apply network strip");
-	}
-    }
-    lenip = endip - ip,
-    total = lenip + lenfrom + lento + 2;
     if (dbkey.ulen < total) {
 	dbkey.data = xrealloc(dbkey.data, total);
 	dbkey.ulen = total;
 	dbkey.flags = DB_DBT_USERMEM;
     }
-    buf = (char*)dbkey.data;
-    if (ipv4 && ipv4_network_mask != 0xffU) {
-	/* Mask the last octet of the IP address */
-	char *q;
-	unsigned long byte;
-	const char *p = endip;
-	while (--p > ip)
-	    if (*p == '.')
-		break;
-	if (*p == '.')
-	    p++;
-	byte = strtoul(p, &q, 10);
-	if (p != q && q <= endip && byte < 256U) {
-	    size_t n = p - ip;
-	    memcpy(buf, ip, n);
-	    buf += n;
-	    /* XXX the byte we are subsituting can only be smaller
-	       than the original so no additional memory is needed. */
-	    n = sprintf(buf, "%lu", byte & ipv4_network_mask);
-	    buf += n;
-	    assert(buf - (char *)dbkey.data <= lenip);
+    return dbkey.data;
+}
+
+/* Upgrade the database from v0 format to the new format */
+static int
+upgrade_from_v0(DB_ENV *dbenv)
+{
+    DB *db0 = NULL, *db1 = NULL;
+    DB_TXN *tid = NULL;
+    DBC *cursor = NULL;
+    DBT key = { 0 }, data = { 0 };
+    int rc = call_db(dbenv->txn_begin(dbenv, NULL, &tid, 0),
+		     "upgrade_from_v0 dbenv->txn_begin");
+    if (!rc)
+	rc = call_db(db_create(&db0, dbenv, 0), "upgrade_from_v0 db_create 0");
+    if (!rc) {
+	/* XXX do not use call_db: it is normal for this call to fail,
+	   if there is no database to upgrade from. */
+	rc = db0->open(db0, tid, DB_FILE_NAME_V0, NULL, DB_UNKNOWN, 0, 0644);
+	if (rc == ENOENT) {
+	    call_db(db0->close(db0, 0), "upgrade_from_v0 db0->close 0");
+	    call_db(tid->commit(tid, 0), "upgrade_from_v0 tid->commit 0");
+	    return 0;
 	}
+    }
+    if (!rc) {
+	syslog(LOG_WARNING, "Upgrading from database format v0");
+	rc = call_db(db_create(&db1, dbenv, 0), "upgrade_from_v0 db_create 1");
+    }
+    if (!rc)
+	rc = call_db(db1->open(db1, tid,
+			       DB_FILE_NAME, NULL,
+			       DB_BTREE, DB_CREATE | DB_EXCL, 0644),
+		     "upgrade_from_v0 db1->open");
+    if (!rc)
+	rc = call_db(db0->cursor(db0, tid, &cursor, 0),
+		     "upgrade_from_v0 db0->cursor");
+    size_t buffer_size = 0;
+    char *buffer = 0;
+    while (!rc) {
+	rc = cursor->get(cursor, &key, &data, DB_NEXT);
+	if (rc == DB_NOTFOUND) {
+	    /* this is expected result, do commit this transaction */
+	    rc = 0;
+	    break;
+	}
+	else if (rc) {
+	    call_db(rc, "upgrade_from_v0 cursor->get");
+	    break;
+	}
+	/* Convert this entry to new format */
+	char *s, *ip, *from, *to;
+	size_t iplen, fromlen, tolen;
+	ip = key.data;
+	iplen = strlen(ip);
+	from = ip + iplen + 1;
+	fromlen = strlen(from);
+	to = from + fromlen + 1;
+	tolen = key.size - fromlen - iplen - 2;
+	int count = 0;
+	for (s = strchr(ip, '.'); s != NULL; s = strchr(s + 1, '.'))
+	    count++;
+	s = ensure_dbkey_reserve(MAX(MAX(sizeof(struct in_addr),
+					 sizeof(struct in6_addr)),
+				     iplen + 1)
+				 + fromlen + tolen + 2);
+	if (count) {
+	    /* This is supposedly an IPv4 address. Complete it with
+	       trailing zeroes. A complete IPv4 address has 3 dots and
+	       4 numbers. For each missing dot, add the dot and a 0. */
+	    size_t needed = iplen + 2 * (3 - count) + 1;
+	    if (buffer_size < needed) {
+		buffer = xrealloc(buffer, needed);
+		buffer_size = needed;
+	    }
+	    strcpy(buffer, ip);
+	    while (count++ < 3)
+		strcat(buffer, ".0");
+	    *s++ = DBKEY_T_IP4;
+	    rc = inet_pton(AF_INET, buffer, s);
+	    s += sizeof(struct in_addr);
+	    if (rc == -1)
+		rc = errno;
+	    else if (rc == 1)
+		rc = 0;
+	    else
+		rc = EINVAL;
+	    if (rc)
+		break;		/* error */
+	}
+	else {
+	    /* Try it as an IPv6 address. v0 format did not abbreviate
+	       IPv6 addresses. */
+	    *s++ = DBKEY_T_IP6;
+	    if (inet_pton(AF_INET6, ip, s) == 1)
+		s += sizeof(struct in6_addr);
+	    else {
+		/* Not IPv4 neither IPv6. Keep it in its raw form */
+		*s++ = DBKEY_T_RAW;
+		strcpy(s, ip);
+		s += iplen + 1;
+	    }
+	}
+	strcpy(s, from);
+	s += fromlen + 1;
+	memcpy(s, to, tolen);
+	s += tolen;
+	dbkey.size = s - (char*)dbkey.data;
+	rc = call_db(db1->put(db1, tid, &dbkey, &data, DB_NOOVERWRITE),
+		     "upgrade_from_v0 db1->put");
+    }
+    if (buffer != NULL)
+	free(buffer);
+    if (cursor != NULL)
+	call_db(cursor->close(cursor), "upgrade_from_v0 cursor->close");
+    if (db1 != NULL)
+	call_db(db1->close(db1, 0), "upgrade_from_v0 db1->close");
+    if (db0 != NULL)
+	call_db(db0->close(db0, 0), "upgrade_from_v0 db0->close");
+    if (!rc)
+	rc = call_db(dbenv->dbremove(dbenv, tid, DB_FILE_NAME_V0, NULL, 0),
+		     "upgrade_from_v0 dbenv->dbremove");
+    if (tid != NULL) {
+	if (rc)
+	    call_db(tid->abort(tid), "upgrade_from_v0 tid->abort");
 	else
-	    ipv4 = 0;
+	    call_db(tid->commit(tid, 0), "upgrade_from_v0 tid->commit");
     }
-    if (! ipv4 || ipv4_network_mask == 0xffU) {
-	memcpy(buf, ip, lenip);
-	buf += lenip;
+    return rc;
+}
+
+static void
+build_triplet_key(const char *ip, const char *from, const char *to)
+{
+    /* New database format: the first byte specifies the format of the record.
+
+       DBKEY_T_RAW, ip, \000, from, \000, to
+       DBKEY_T_IP4, in_addr, from, \000, to
+       DBKEY_T_IP6, in6_addr, from, \000, to
+    */
+    const char *endip = strchr(ip, '\n'),
+	*endfrom = strchr(from, '\n'),
+	*endto = strchr(to, '\n');
+    size_t lenfrom = endfrom - from,
+	lenip = endip - ip,
+	lento = endto - to;
+    size_t maxbuf = MAX(MAX(sizeof(struct in_addr), sizeof(struct in6_addr)),
+			lenip + 1);
+    char *buf = ensure_dbkey_reserve(maxbuf + lenfrom + lento + 2);
+    /* XXX KLUDGE we restore *endip to \n after the inet_pton calls */
+    char *endipx = (char *)endip;
+    *endipx = 0;
+    if (inet_pton(AF_INET, ip, buf + 1) > 0) {
+	*buf++ = DBKEY_T_IP4;
+	dbkey.size = sizeof(struct in_addr);
+	unsigned int keep_bytes = ipv4_network_prefix / 8;
+	if (keep_bytes < dbkey.size) {
+	    buf[keep_bytes] &= 0xff << (8 - ipv4_network_prefix % 8);
+	    memset(buf + keep_bytes + 1, 0, dbkey.size - keep_bytes - 1);
+	}
     }
-    *buf++ = 0;
-    if (debug_me)
-	syslog(LOG_DEBUG, "triplet effective IP: %s", dbkey.data);
+    else if (inet_pton(AF_INET6, ip, buf + 1) > 0) {
+	*buf++ = DBKEY_T_IP6;
+	dbkey.size = sizeof(struct in6_addr);
+	unsigned int keep_bytes = ipv6_network_prefix / 8;
+	if (keep_bytes < dbkey.size) {
+	    buf[keep_bytes] &= 0xff << (8 - ipv6_network_prefix % 8);
+	    memset(buf + keep_bytes + 1, 0, dbkey.size - keep_bytes - 1);
+	}
+    }
+    else {
+	/* inet_pton failed to parse the address. Fallback to the
+	   raw address */
+	*buf++ = DBKEY_T_RAW;
+	dbkey.size = lenip + 1;
+	memcpy(buf, ip, dbkey.size);
+    }
+    *endipx = '\n';
+
+    buf += dbkey.size;
     memcpy(buf, from, lenfrom);
     buf += lenfrom;
     *buf++ = 0;
     memcpy(buf, to, lento);
     buf += lento;
-    dbkey.size = buf - (char *)dbkey.data;
+    dbkey.size = buf - (char*)dbkey.data;
     assert(dbkey.size <= dbkey.ulen);
+
+    if (debug_me)
+	syslog(LOG_DEBUG, "triplet effective IP: %s", db_key_ntop(dbkey.data));
 }
 
 /* If there is an error while processing a SMTP request, log a warning
@@ -514,12 +761,10 @@ build_data()
 }
 
 static void
-get_grey_data()
+get_grey_data(DB *db, DB_TXN *txn)
 {
     int rc;
-    if (!db)
-	jmperr(PACKAGE_STRING " database not opened");
-    rc = db->get(db, NULL, &dbkey, &dbdata, 0);
+    rc = db->get(db, txn, &dbkey, &dbdata, 0);
     if (rc == DB_NOTFOUND) {
 	touch_data();
 	build_data();
@@ -547,13 +792,9 @@ get_grey_data()
 }
 
 static int
-put_grey_data()
+put_grey_data(DB *db, DB_TXN *txn)
 {
-    int rc;
-    rc = db->put(db, NULL, &dbkey, &dbdata, 0);
-    if (rc)
-	log_db_error("put", rc);
-    return rc;
+    return call_db(db->put(db, txn, &dbkey, &dbdata, 0), "put");
 }
 
 static void
@@ -600,6 +841,10 @@ static int
 process_smtp_rcpt(int crypted)
 {
     double delay;
+    int rc;
+    DB_ENV *dbenv;
+    DB *db;
+    DB_TXN *txn = NULL;
     if (setjmp(defect_jmp_buf)) {
 	if (defect_msg) {
 	    printf(STR_ACTION "WARN %s\n", defect_msg);
@@ -607,15 +852,26 @@ process_smtp_rcpt(int crypted)
 	}
 	else
 	    puts(STR_ACTION "WARN " PACKAGE_STRING " is not working properly");
+	if (txn)
+	    call_db(txn->abort(txn), "Failed to abort transaction");
 	return 1;
     }
-    get_grey_data();
+    rc = get_dbenv(&dbenv, 1);
+    if (rc)
+	jmperr("get_dbenv failed");
+    rc = get_db(&db, 1);
+    if (rc)
+	jmperr("get_db failed");
+    rc = call_db(dbenv->txn_begin(dbenv, NULL, &txn, 0),
+		 "txn_begin failed in process_smtp_rcpt");
+    if (rc)
+	jmperr("txn_begin failed");
+    get_grey_data(db, txn);
     if (triplet_data.crypted != crypted) {
       triplet_data.crypted = crypted;
       if (debug_me) syslog(LOG_DEBUG,"crypted field changed for some reason");
     }
     delay = difftime(triplet_data.access_time, triplet_data.create_time);
-
     /* Block inbound mail that is from a previously unknown (ip, from, to) triplet */
     /* However we want different behavior for crypted stuff
      */
@@ -624,45 +880,49 @@ process_smtp_rcpt(int crypted)
       if(delay < cryptlist_delay) {
 	triplet_data.block_count++;
 	fputs(STR_ACTION, stdout);
-	printf_action(reject_action_fmt, cryptlist_delay - delay);
+	printf_action(reject_action_fmt, greylist_delay - delay);
 	putchar('\n');
-      }
-      else if (triplet_data.pass_count++)
+    }
+    else if (triplet_data.pass_count++)
 	puts(STR_ACTION "DUNNO");
       else {
-	fputs(STR_ACTION, stdout);
-	printf_action(cryptlisted_action_fmt, delay);
-	putchar('\n');
+        fputs(STR_ACTION, stdout);
+        printf_action(cryptlisted_action_fmt, delay);
+        putchar('\n');
       }
     } else {
       if(delay < greylist_delay || block_unencrypted) {
-	triplet_data.block_count++;
-	fputs(STR_ACTION, stdout);
-	if(block_unencrypted == 1) {
-	  printf_action(reject_unencrypted_action_fmt, (3600*24)); // block it for a day
-	} else {
-	  printf_action(reject_unencrypted_action_fmt, greylist_delay - delay);
-	}
-	putchar('\n');
+        triplet_data.block_count++;
+        fputs(STR_ACTION, stdout);
+        if(block_unencrypted == 1) {
+          printf_action(reject_unencrypted_action_fmt, (3600*24)); // block it for a day
+        } else {
+          printf_action(reject_unencrypted_action_fmt, greylist_delay - delay);
+        }
+        putchar('\n');
       }
       else if (triplet_data.pass_count++)
-	puts(STR_ACTION "DUNNO");
+        puts(STR_ACTION "DUNNO");
       else {
-	fputs(STR_ACTION, stdout);
-	printf_action(greylisted_action_fmt, delay);
-	putchar('\n');
+        fputs(STR_ACTION, stdout);
+        printf_action(greylisted_action_fmt, delay);
+        putchar('\n');
       }
     }
-    return put_grey_data();
+    rc = put_grey_data(db, txn);
+    if (rc)
+	call_db(txn->abort(txn), "abort failed");
+    else
+	call_db(txn->commit(txn, 0), "commit failed");
+    return rc;
 }
 
 static void
 signal_handler(int signal)
 {
-    cleanup();
     syslog(LOG_NOTICE, "Received signal %d", signal);
-    kill(getpid(), signal);
-    exit(-1);
+    exit_requested = "signal received";
+    exit_requested_status = EXIT_FAILURE;
 }
 
 static int
@@ -771,7 +1031,12 @@ print_usage(FILE *f, const char *progname)
 	    "    -/ <nbits>, --network-prefix <nbits>\n"
 	    "\n"
 	    "	Only consider the first <nbits> bits of an IPv4 address.\n"
-	    "	Defaults to 32 i.e. the whole adresse is significant.\n"
+	    "	Defaults to %lu i.e. the whole adresse is significant.\n"
+	    "\n"
+	    "    -6 <nbits>, --network6-prefix <nbits>\n"
+	    "\n"
+	    "	Only consider the first <nbits> bits of an IPv6 address.\n"
+	    "	Defaults to %lu i.e. the whole adresse is significant.\n"
 	    "\n"
 	    "    -B \n"
 	    "\n"
@@ -782,7 +1047,8 @@ print_usage(FILE *f, const char *progname)
 	    "        Dump the triplets database to stdout.  Mostly for debugging\n"
 	    "        purposes.\n",
 	    progname, AUTO_RECORD_LIFE_SECS, DELAY_MAIL_SECS, DELAY_CMAIL_SECS,
-	    UPDATE_RECORD_LIFE_SECS, reject_action_fmt, greylisted_action_fmt, cryptlisted_action_fmt);
+	    UPDATE_RECORD_LIFE_SECS, reject_action_fmt, greylisted_action_fmt, cryptlisted_action_fmt,
+	    IPV4_BITS, IPV6_BITS);
 }
 
 /* 
@@ -825,9 +1091,6 @@ main(int argc, const char **argv)
 {
     char *p;
     unsigned int i;
-    int rc;
-    unsigned long network_prefix = 32;
-    unsigned int suffix;
     int opt_version = 0, opt_help = 0, opt_error = 0;
     progname = strrchr(argv[0], '/');
     if (progname)
@@ -835,7 +1098,7 @@ main(int argc, const char **argv)
     else
 	progname = argv[0];
     openlog(progname, LOG_PID, LOG_MAIL);
-    for (i = 1; i < argc; i++) {      
+    for (i = 1; i < argc; i++) {
 	if (optp(argv[i], "-d", "--debug"))
 	    debug_me = 1;
 	else if (optp(argv[i], "-v", "--verbose"))
@@ -876,10 +1139,18 @@ main(int argc, const char **argv)
 	else if (optp(argv[i], "-/", "--network-prefix")) {
 	    if (++i >= argc)
 		fatal("Missing argument to --network-prefix");
-	    network_prefix = strtoul(argv[i], &p, 10);
-	    if (*p || network_prefix > 32U)
+	    ipv4_network_prefix = strtoul(argv[i], &p, 10);
+	    if (*p || ipv4_network_prefix > IPV4_BITS)
 		fatal("Invalid argument to --network-prefix.  "
 		      "Integer value between 0 and 32 expected");
+	}
+	else if (optp(argv[i], "-6", "--network6-prefix")) {
+	    if (++i >= argc)
+		fatal("Missing argument to --network6-prefix");
+	    ipv6_network_prefix = strtoul(argv[i], &p, 10);
+	    if (*p || ipv6_network_prefix > IPV6_BITS)
+		fatal("Invalid argument to --network6-prefix.  "
+		      "Integer value between 0 and 128 expected");
 	}
 	else if (optp(argv[i], "-p", "--pass-max-idle")) {
 	    if (++i >= argc)
@@ -931,51 +1202,72 @@ main(int argc, const char **argv)
 	exit(EXIT_SUCCESS);
     }
 
-    suffix = 32 - network_prefix;
-    ipv4_network_strip_bytes = suffix >> 3;
-    ipv4_network_mask = 0xffU & ~0U << (suffix & 0x7U);
-
+    struct sigaction act = { { 0 } };
+    act.sa_handler = signal_handler;
+    act.sa_flags = SA_RESETHAND; /* Avoid infinite loops */
+    sigemptyset(&act.sa_mask);
 #ifdef SIGHUP
-    signal(SIGHUP, signal_handler);
+    if (sigaction(SIGHUP, &act, NULL) < 0) {
+	perror("sigaction failed");
+	exit(1);
+    }
 #endif
 #ifdef SIGINT
-    signal(SIGINT, signal_handler);
+    if (sigaction(SIGINT, &act, NULL) < 0) {
+	perror("sigaction failed");
+	exit(1);
+    }
 #endif
 #ifdef SIGQUIT
-    signal(SIGQUIT, signal_handler);
+    if (sigaction(SIGQUIT, &act, NULL) < 0) {
+	perror("sigaction failed");
+	exit(1);
+    }
 #endif
 #ifdef SIGILL
-    signal(SIGILL, signal_handler);
+    if (sigaction(SIGILL, &act, NULL) < 0) {
+	perror("sigaction failed");
+	exit(1);
+    }
 #endif
 #ifdef SIGABRT
-    signal(SIGABRT, signal_handler);
+    if (sigaction(SIGABRT, &act, NULL) < 0) {
+	perror("sigaction failed");
+	exit(1);
+    }
 #endif
 #ifdef SIGSEGV
-    signal(SIGSEGV, signal_handler);
+    if (sigaction(SIGSEGV, &act, NULL) < 0) {
+	perror("sigaction failed");
+	exit(1);
+    }
 #endif
 #ifdef SIGALRM
-    signal(SIGALRM, signal_handler);
+    if (sigaction(SIGALRM, &act, NULL) < 0) {
+	perror("sigaction failed");
+	exit(1);
+    }
 #endif
 #ifdef SIGTERM
-    signal(SIGTERM, signal_handler);
+    if (sigaction(SIGTERM, &act, NULL) < 0) {
+	perror("sigaction failed");
+	exit(1);
+    }
 #endif
 
-    rc = initialize();
-    if (rc) {
-	cleanup();
-	syslog(LOG_ERR, "error: initialization failure: %s", db_strerror(rc));
-    }
+    initialize();
     if (dump_triplets)
 	do_dump_triplets();
-    else while (read_policy_request(0)) {
+    else while (! exit_requested && read_policy_request(0)) {
 	const char *protocol = 0, *state = 0, *ip, *from, *to, 
 	  *encryption_protocol = 0, *ccert_fingerprint = 0;
 	int crypted = 0;
 
 	if ((protocol = find_attribute("protocol_name"))
 	    && (state = find_attribute("protocol_state"))
-	    && (prefixp(protocol, STR_SMTP) || prefixp(protocol, STR_ESMTP))
-	    && prefixp(state, STR_RCPT)
+	    && (prefixp(protocol, STR_SMTP "\n")
+		|| prefixp(protocol, STR_ESMTP "\n"))
+	    && prefixp(state, STR_RCPT "\n")
 	    && (ip = find_attribute("client_address"))
 	    && (from = find_attribute("sender"))
 	    && (to = find_attribute("recipient"))) {
@@ -989,23 +1281,23 @@ main(int argc, const char **argv)
 	      actual_crypt[0] = '\0';
 	      actual_fingerprint[0] = '\0';
 	      if(encryption_protocol[0] != '\n') {
-		crypted = triplet_data.crypted = TRANSPORT_ENCRYPTED; // FIXME, figure out what it is
+          crypted = triplet_data.crypted = TRANSPORT_ENCRYPTED; // FIXME, figure out what it is
 	      for(i = 0; i < 255 && encryption_protocol[i] != '\n'; i++) ;
 	      if(i > 0) { 
-		strncpy(actual_crypt,encryption_protocol,i); 
-		actual_crypt[i] = '\0';
+          strncpy(actual_crypt,encryption_protocol,i); 
+          actual_crypt[i] = '\0';
 	      }
 
 	      for(i = 0; i < 255 && ccert_fingerprint[i] != '\n'; i++) ;
 
 	      if(i > 0) { 
-		strncpy(actual_fingerprint,ccert_fingerprint,i); 
-		actual_fingerprint[i] = '\0';
+          strncpy(actual_fingerprint,ccert_fingerprint,i); 
+          actual_fingerprint[i] = '\0';
 	      }
 	      
 	      syslog(LOG_DEBUG,"Encryption: %s Fingerprint: %s", 
-		     actual_crypt ? actual_crypt : "NA",
-		     actual_fingerprint ? actual_fingerprint : "NA");  
+          actual_crypt ? actual_crypt : "NA",
+          actual_fingerprint ? actual_fingerprint : "NA");  
 	    }
 	    }
 
@@ -1047,5 +1339,5 @@ main(int argc, const char **argv)
     if (opt_verbose)
 	syslog(LOG_NOTICE, "daemon stopped");
     closelog();
-    return 0;
+    return exit_requested_status;
 }
