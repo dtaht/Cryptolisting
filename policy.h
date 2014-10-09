@@ -17,12 +17,15 @@
 #define STR_RCPT "RCPT"
 #define STR_ACTION "action="
 
+/* FIXME this should actually be part of greyfix.h */
+extern void *exit_requested;
+
 extern const char *progname;
 extern int opt_verbose;
 extern int debug_me;
 
 extern void *xrealloc(void *, size_t);
-extern int policy_initialize();
+extern void policy_initialize();
 extern void policy_cleanup();
 extern char *find_attribute(const char *);
 extern const char *read_policy_request(int);

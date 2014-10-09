@@ -41,12 +41,11 @@ xrealloc(void *ptr, size_t size)
     abort();
 }
 
-int
+void
 policy_initialize()
 {
     if (opt_verbose)
 	syslog(LOG_NOTICE, "Policy daemon");
-    return 0;
 }
 
 void
@@ -71,19 +70,19 @@ find_attribute(const char *name)
     return NULL;
 }
 
-static char *
+static const char *
 find_empty_line(const char *p, const char *const endp)
 {
     while (p < endp && (p = memchr(p, '\n', endp - p))) {
 	p++;
 	if (p < endp && *p == '\n')
-	    return (char *) p + 1;
+	    return p + 1;
     }
     return NULL;
 }
 
 /* Find the end of request marker */
-static char *
+static const char *
 find_eor()
 {
     return find_empty_line(policy_request,
@@ -103,18 +102,12 @@ forget_policy_request()
 	policy_request_fill = 0;
 }
 
-// FIXME Grumble. We need a cleaner way to pass this to printf
-
-#define MSG_ALLOCATE_SIZET8_BYTES "allocate %lu bytes for request buffer"
-#define MSG_ALLOCATE_SIZET4_BYTES "allocate %u bytes for request buffer"
-
 /* Read in a new SMTPD access policy request */
-
 const char *
 read_policy_request(int in)
 {
     forget_policy_request();
-    while (! find_eor()) {
+    while (! exit_requested && ! find_eor()) {
 	size_t wanted;
 	int n;
 	/* Make sure there is some room to read data */
@@ -124,23 +117,21 @@ read_policy_request(int in)
 	    else
 		policy_request_size = BUFSIZ;
 	    if (debug_me)
-	      if(sizeof(size_t) == 8) syslog(LOG_DEBUG,
-		       MSG_ALLOCATE_SIZET8_BYTES,
-		       policy_request_size);
-	      if(sizeof(size_t) == 4) syslog(LOG_DEBUG,
-		       MSG_ALLOCATE_SIZET4_BYTES,
+		syslog(LOG_DEBUG,
+		       "allocate %zu bytes for request buffer",
 		       policy_request_size);
 	    policy_request = xrealloc(policy_request, policy_request_size);
 	}
 	wanted = policy_request_size - policy_request_fill;
 	n = read(in, policy_request + policy_request_fill, wanted);
-	if (n < 0)
-	    syslog(LOG_ERR, "read_policy_request failed: %s: %d",
-		   strerror(errno), n);
-	else if (n)
+	if (n > 0)
 	    policy_request_fill += n;
-	else
+	else {
+	    if (n < 0)
+		syslog(LOG_ERR, "read_policy_request failed (%d): %s",
+		       n, strerror(errno));
 	    return NULL;
+	}
     }
     return policy_request;
 }
